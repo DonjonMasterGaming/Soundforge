@@ -1,7 +1,7 @@
 <Window x:Class="Soundforge.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Soundforge 0.8a.2" Height="820" Width="1400"
+        Title="Soundforge 0.8a.3" Height="820" Width="1400"
         MinHeight="600" MinWidth="960"
         Background="#17181C" Foreground="#F2F2F2">
     <Window.Resources>
@@ -83,8 +83,11 @@
                     <TextBlock x:Name="CurrentSceneText" Text="CURRENT SCENE" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/>
 
                     <Border Background="#202228" CornerRadius="8" Padding="12" Margin="0,0,0,10">
-                        <StackPanel>
-                            <TextBlock Text="SCENE LAYERS" FontWeight="Bold"/>
+                        <Expander x:Name="SceneLayersExpander" IsExpanded="True">
+                            <Expander.Header>
+                                <TextBlock Text="SCENE LAYERS" FontWeight="Bold" Foreground="#F2F2F2"/>
+                            </Expander.Header>
+                        <StackPanel Margin="0,8,0,0">
                             <TextBlock Text="Music plays randomly from its active pool. Ambience pools can follow Music pools automatically." TextWrapping="Wrap" Margin="0,6,0,4"/>
                             <StackPanel x:Name="LayerPanel"/>
                             <DockPanel Margin="0,8,0,0">
@@ -92,6 +95,7 @@
                                 <TextBox x:Name="NewLayerNameText" Height="28" Margin="0,0,8,0" ToolTip="New layer name"/>
                             </DockPanel>
                         </StackPanel>
+                        </Expander>
                     </Border>
 
                     <Border Background="#202228" CornerRadius="8" Padding="12" Margin="0,0,0,10">
