@@ -1,0 +1,95 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "UUID": "com.soundforge.control",
+  "Name": "Soundforge",
+  "Version": "0.2.0.0",
+  "Author": "Soundforge",
+  "Description": "Local Stream Deck+ control for Soundforge scenes, ambience, effects, and mix levels.",
+  "Category": "Soundforge",
+  "CategoryIcon": "assets/action",
+  "CodePathWin": "Soundforge.StreamDeckPlugin.exe",
+  "Icon": "assets/action",
+  "SDKVersion": 2,
+  "Software": { "MinimumVersion": "6.5" },
+  "OS": [ { "Platform": "windows", "MinimumVersion": "10" } ],
+  "Actions": [
+    {
+      "Name": "Activate Scene",
+      "UUID": "com.soundforge.control.scene",
+      "Tooltip": "Activate a Soundforge scene by name.",
+      "PropertyInspectorPath": "property-inspector.html",
+      "Icon": "assets/action",
+      "Controllers": [ "Keypad" ],
+      "UserTitleEnabled": false,
+      "States": [ { "Image": "assets/action" } ]
+    },
+    {
+      "Name": "Toggle Ambience",
+      "UUID": "com.soundforge.control.ambience",
+      "Tooltip": "Start or stop Auto Play ambience in the active Soundforge scene.",
+      "Icon": "assets/action",
+      "Controllers": [ "Keypad" ],
+      "UserTitleEnabled": false,
+      "States": [ { "Image": "assets/action" } ]
+    },
+    {
+      "Name": "Trigger Effect",
+      "UUID": "com.soundforge.control.effect",
+      "Tooltip": "Trigger an Effects source in the active scene by name.",
+      "PropertyInspectorPath": "property-inspector.html",
+      "Icon": "assets/action",
+      "Controllers": [ "Keypad" ],
+      "UserTitleEnabled": false,
+      "States": [ { "Image": "assets/action" } ]
+    },
+    {
+      "Name": "Stop All",
+      "UUID": "com.soundforge.control.stop-all",
+      "Tooltip": "Stop every Soundforge source.",
+      "Icon": "assets/action",
+      "Controllers": [ "Keypad" ],
+      "UserTitleEnabled": false,
+      "States": [ { "Image": "assets/action" } ]
+    },
+    {
+      "Name": "Master Volume",
+      "UUID": "com.soundforge.control.master-volume",
+      "Tooltip": "Adjust Soundforge master volume.",
+      "Icon": "assets/action",
+      "Controllers": [ "Encoder" ],
+      "UserTitleEnabled": false,
+      "States": [ { "Image": "assets/action" } ],
+      "Encoder": { "layout": "$B1", "Icon": "assets/action", "TriggerDescription": { "Rotate": "Adjust master volume" } }
+    },
+    {
+      "Name": "Music Volume",
+      "UUID": "com.soundforge.control.music-volume",
+      "Tooltip": "Adjust Music level in the active scene.",
+      "Icon": "assets/action",
+      "Controllers": [ "Encoder" ],
+      "UserTitleEnabled": false,
+      "States": [ { "Image": "assets/action" } ],
+      "Encoder": { "layout": "$B1", "Icon": "assets/action", "TriggerDescription": { "Rotate": "Adjust music volume" } }
+    },
+    {
+      "Name": "Ambience Volume",
+      "UUID": "com.soundforge.control.ambience-volume",
+      "Tooltip": "Adjust Ambience level in the active scene.",
+      "Icon": "assets/action",
+      "Controllers": [ "Encoder" ],
+      "UserTitleEnabled": false,
+      "States": [ { "Image": "assets/action" } ],
+      "Encoder": { "layout": "$B1", "Icon": "assets/action", "TriggerDescription": { "Rotate": "Adjust ambience volume" } }
+    },
+    {
+      "Name": "Effects Volume",
+      "UUID": "com.soundforge.control.effects-volume",
+      "Tooltip": "Adjust Effects level in the active scene.",
+      "Icon": "assets/action",
+      "Controllers": [ "Encoder" ],
+      "UserTitleEnabled": false,
+      "States": [ { "Image": "assets/action" } ],
+      "Encoder": { "layout": "$B1", "Icon": "assets/action", "TriggerDescription": { "Rotate": "Adjust effects volume" } }
+    }
+  ]
+}

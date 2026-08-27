@@ -1,0 +1,132 @@
+<Window x:Class="Soundforge.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Soundforge" Height="820" Width="1400"
+        MinHeight="600" MinWidth="800"
+        Background="#17181C" Foreground="#F2F2F2">
+    <Window.Resources>
+        <Style TargetType="{x:Type CheckBox}">
+            <Setter Property="Foreground" Value="#F2F2F2"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style TargetType="{x:Type RadioButton}">
+            <Setter Property="Foreground" Value="#F2F2F2"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+    </Window.Resources>
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <DockPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="SOUNDFORGE" FontSize="24" FontWeight="Bold" DockPanel.Dock="Left"/>
+            <Button Content="SCENE EDITOR" Padding="10,5" Margin="20,0,6,0" DockPanel.Dock="Left" Click="ShowSceneEditor_Click"/>
+            <Button Content="MIXER" Padding="10,5" DockPanel.Dock="Left" Click="ShowMixer_Click"/>
+            <Button Content="SAVE PROJECT" Padding="10,5" Margin="6,0,0,0" DockPanel.Dock="Left" Click="SaveProject_Click"/>
+            <Button Content="OPEN PROJECT" Padding="10,5" Margin="6,0,0,0" DockPanel.Dock="Left" Click="OpenProject_Click"/>
+            <ComboBox x:Name="OutputDeviceCombo" Width="280" Height="30"
+                      HorizontalAlignment="Right" Margin="20,0,0,0"
+                      SelectionChanged="OutputDeviceCombo_SelectionChanged"/>
+            <TextBlock Text="OUTPUT" VerticalAlignment="Center" Margin="20,0,0,0"/>
+        </DockPanel>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="270"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Background="#202228" CornerRadius="8" Padding="12" Margin="0,0,12,0">
+                <StackPanel>
+                    <TextBlock Text="SCENES" FontWeight="Bold" Margin="0,0,0,10"/>
+                    <StackPanel x:Name="SceneButtonsPanel"/>
+                    <Border Background="#2B3345" CornerRadius="4" Padding="8" Margin="0,12,0,6">
+                        <StackPanel>
+                            <TextBlock Text="EDIT MODE" FontWeight="Bold" Foreground="#9FD0FF"/>
+                            <CheckBox x:Name="EditModeCheckBox" Content="Keep the live scene playing while editing" FontWeight="SemiBold" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </Border>
+                    <TextBlock Text="TRACK VIEW" FontWeight="Bold" Margin="0,6,0,4"/>
+                    <RadioButton x:Name="SceneViewRadio" GroupName="TrackViewMode" Content="SCENE VIEW — selected scene only" IsChecked="True" Checked="TrackViewMode_Changed" Margin="0,0,0,4"/>
+                    <RadioButton x:Name="GlobalViewRadio" GroupName="TrackViewMode" Content="GLOBAL VIEW — all active tracks" Checked="TrackViewMode_Changed" Margin="0,0,0,6"/>
+                    <Button Content="▶ Activate Selected Scene" Padding="8" Click="ActivateSelectedScene_Click"/>
+                    <Separator Margin="0,14"/>
+                    <TextBox x:Name="NewSceneNameText" Height="28" Margin="0,0,0,6" ToolTip="New scene name"/>
+                    <Button Content="＋ Add Scene" Padding="8" Click="AddScene_Click"/>
+                    <TextBlock Text="SELECTED SCENE" FontWeight="Bold" Margin="0,18,0,6"/>
+                    <TextBox x:Name="SelectedSceneNameText" Height="28" Margin="0,0,0,6"/>
+                    <Button Content="Save Name" Padding="8" Click="SaveSceneName_Click"/>
+                    <Button Content="Delete Scene" Padding="8" Margin="0,6,0,0" Click="DeleteScene_Click"/>
+                    <TextBlock Text="TRANSITION" FontWeight="Bold" Margin="0,18,0,6"/>
+                    <CheckBox x:Name="SceneCrossfadeCheckBox" Content="Crossfade on activation" Margin="0,0,0,6" Checked="TransitionSettings_Changed" Unchecked="TransitionSettings_Changed"/>
+                    <TextBlock Text="Fade in (seconds)" Margin="0,0,0,2"/>
+                    <TextBox x:Name="FadeInSecondsText" Height="28" Margin="0,0,0,6" LostFocus="TransitionDuration_LostFocus"/>
+                    <TextBlock Text="Fade out (seconds)" Margin="0,0,0,2"/>
+                    <TextBox x:Name="FadeOutSecondsText" Height="28" LostFocus="TransitionDuration_LostFocus"/>
+                </StackPanel>
+            </Border>
+
+            <Grid Grid.Column="1">
+            <ScrollViewer x:Name="SceneEditorPage" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                <StackPanel x:Name="TrackPanel">
+                    <TextBlock x:Name="CurrentSceneText" Text="CURRENT SCENE" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/>
+
+                    <Border Background="#202228" CornerRadius="8" Padding="12" Margin="0,0,0,10">
+                        <StackPanel>
+                            <TextBlock Text="SCENE LAYERS" FontWeight="Bold"/>
+                            <TextBlock Text="Layers are independent mixer groups; scene playback rules will build on them." TextWrapping="Wrap" Margin="0,6,0,4"/>
+                            <StackPanel x:Name="LayerPanel"/>
+                            <DockPanel Margin="0,8,0,0">
+                                <Button Content="＋ Add Layer" Padding="10,4" DockPanel.Dock="Right" Click="AddLayer_Click"/>
+                                <TextBox x:Name="NewLayerNameText" Height="28" Margin="0,0,8,0" ToolTip="New layer name"/>
+                            </DockPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#202228" CornerRadius="8" Padding="12" Margin="0,0,0,10">
+                        <StackPanel>
+                            <DockPanel>
+                                <TextBlock x:Name="SceneTracksHeader" Text="SCENE TRACKS" FontWeight="Bold" DockPanel.Dock="Left"/>
+                                <Button Content="＋ Load Audio File" Click="Load_Click" Padding="10,4" HorizontalAlignment="Right"/>
+                            </DockPanel>
+                            <TextBlock x:Name="EmptyTracksText" Text="Load one or more audio files to begin mixing." Margin="0,10,0,2"/>
+                            <StackPanel x:Name="ActiveTracksPanel"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#202228" CornerRadius="8" Padding="12">
+                        <StackPanel>
+                            <TextBlock Text="MIXER NOTES" FontWeight="Bold"/>
+                            <TextBlock Text="Each loaded file runs independently. Scene layers are now editable; assigning tracks and playlists to them is next." TextWrapping="Wrap" Margin="0,8,0,0"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+
+            <ScrollViewer x:Name="MixerPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <TextBlock x:Name="MixerTitleText" Text="SCENE MIXER" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                    <Border Background="#202228" CornerRadius="8" Padding="16">
+                        <StackPanel>
+                            <TextBlock Text="LAYER LEVELS" FontWeight="Bold"/>
+                            <TextBlock Text="These controls tune the selected scene and affect currently playing sources immediately." TextWrapping="Wrap" Margin="0,6,0,12"/>
+                            <StackPanel x:Name="MixerLayerPanel"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+            </Grid>
+        </Grid>
+
+        <DockPanel Grid.Row="2" Margin="0,12,0,0">
+            <TextBlock Text="MASTER" VerticalAlignment="Center"/>
+            <Slider x:Name="MasterSlider" Minimum="0" Maximum="1" Value="0.8" Width="240"
+                    Margin="12,0" VerticalAlignment="Center" ValueChanged="MasterSlider_ValueChanged"/>
+            <Button Content="■ STOP ALL" Click="StopAll_Click" Padding="12,6" Margin="8,0"/>
+            <Button Content="🔇 MUTE ALL" Click="Mute_Click" Padding="12,6" HorizontalAlignment="Right"/>
+        </DockPanel>
+    </Grid>
+</Window>

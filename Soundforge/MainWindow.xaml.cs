@@ -1,0 +1,944 @@
+using Microsoft.Win32;
+using NAudio.CoreAudioApi;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Threading;
+using Soundforge.Audio;
+using Soundforge.Control;
+using Soundforge.Models;
+using Soundforge.Persistence;
+using Soundforge.Settings;
+
+namespace Soundforge;
+
+public partial class MainWindow : Window
+{
+    private readonly AudioEngine _audioEngine = new();
+    private readonly AudioDeviceManager _devices = new();
+    private readonly DispatcherTimer _timer;
+    private readonly Dictionary<Guid, TrackRow> _trackRows = new();
+    private SoundforgeProject _project = new();
+    private readonly AppSettingsStore _settingsStore = new();
+    private readonly AppSettings _settings;
+    private readonly LocalControlServer _controlServer;
+    private Scene? _selectedScene;
+    private Scene? _activeScene;
+    private bool _muted;
+
+    public MainWindow()
+    {
+        InitializeComponent();
+        _settings = _settingsStore.Load();
+        _audioEngine.MasterVolume = (float)MasterSlider.Value;
+        _controlServer = new LocalControlServer(command => Dispatcher.InvokeAsync(() => HandleControlCommand(command)).Task);
+        _controlServer.Start();
+        Closing += (_, _) => _controlServer.Dispose();
+        Loaded += async (_, _) => await RefreshDevicesAsync();
+        AddScene("Demo");
+
+        _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+        _timer.Tick += (_, _) => UpdateProgress();
+        _timer.Start();
+    }
+
+    private async Task RefreshDevicesAsync()
+    {
+        try
+        {
+            var devices = await Task.Run(_devices.GetPlaybackDevices);
+            OutputDeviceCombo.ItemsSource = devices;
+            OutputDeviceCombo.DisplayMemberPath = "Name";
+            var preferredDeviceId = _project.PreferredOutputDeviceId ?? _settings.OutputDeviceId;
+            var rememberedDevice = devices.FirstOrDefault(device => device.Id == preferredDeviceId);
+            if (rememberedDevice is not null)
+                OutputDeviceCombo.SelectedItem = rememberedDevice;
+            else if (OutputDeviceCombo.Items.Count > 0)
+                OutputDeviceCombo.SelectedIndex = 0;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Unable to list audio output devices: {ex.Message}", "Soundforge", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void Load_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Filter = "Audio files|*.mp3;*.wav;*.aiff;*.aif;*.ogg|All files|*.*"
+        };
+
+        if (dialog.ShowDialog() != true) return;
+
+        try
+        {
+            var track = new Track
+            {
+                Name = System.IO.Path.GetFileName(dialog.FileName),
+                FilePath = dialog.FileName,
+                Volume = 0.8,
+                LayerId = _selectedScene?.Layers.FirstOrDefault()?.Id
+            };
+
+            var targetLayer = GetLayer(track.LayerId);
+            track.Loop = targetLayer?.PlaybackBehavior == LayerPlaybackBehavior.Ambience;
+            track.AutoPlayOnSceneActivation = targetLayer?.PlaybackBehavior != LayerPlaybackBehavior.Effects;
+            AssignTrackToLayer(track, track.LayerId);
+            AddTrackRow(null, track);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Unable to load audio: {ex.Message}", "Soundforge", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void OutputDeviceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        var device = OutputDeviceCombo.SelectedItem as AudioDeviceInfo;
+        _audioEngine.SetOutputDevice(device?.Id);
+        _project.PreferredOutputDeviceId = device?.Id;
+        _settings.OutputDeviceId = device?.Id;
+        _settingsStore.Save(_settings);
+    }
+
+    private void Mute_Click(object sender, RoutedEventArgs e)
+    {
+        _muted = !_muted;
+        _audioEngine.MasterVolume = _muted ? 0f : (float)MasterSlider.Value;
+        ((Button)sender).Content = _muted ? "🔊 UNMUTE ALL" : "🔇 MUTE ALL";
+    }
+
+    private void MasterSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        _project.MasterVolume = e.NewValue;
+        if (IsInitialized && !_muted)
+            _audioEngine.MasterVolume = (float)e.NewValue;
+    }
+
+    private void StopAll_Click(object sender, RoutedEventArgs e)
+    {
+        _audioEngine.StopAll();
+        RefreshTrackVisibility();
+    }
+
+    private SoundforgeControlResult HandleControlCommand(SoundforgeControlCommand command)
+    {
+        try
+        {
+            return command.Action switch
+            {
+                "activateScene" => ActivateSceneFromControl(command.SceneName),
+                "toggleAmbience" => ToggleLayerFromControl(LayerPlaybackBehavior.Ambience),
+                "triggerEffect" => TriggerEffectFromControl(command.TrackName),
+                "stopAll" => StopAllFromControl(),
+                "adjustMaster" => AdjustMasterFromControl(command.Ticks),
+                "adjustMusic" => AdjustLayerFromControl(LayerPlaybackBehavior.Music, command.Ticks),
+                "adjustAmbience" => AdjustLayerFromControl(LayerPlaybackBehavior.Ambience, command.Ticks),
+                "adjustEffects" => AdjustLayerFromControl(LayerPlaybackBehavior.Effects, command.Ticks),
+                "listScenes" => new SoundforgeControlResult(true, "Scenes loaded.", _project.Scenes.Select(scene => scene.Name).Order().ToList()),
+                "listEffects" => new SoundforgeControlResult(
+                    true,
+                    _activeScene is null ? "Activate a scene to list its effects." : "Effects loaded.",
+                    _activeScene is null
+                        ? []
+                        : GetSceneSources(_activeScene)
+                            .Where(source => source.Layer.PlaybackBehavior == LayerPlaybackBehavior.Effects)
+                            .Select(source => source.Track.Name)
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .Order()
+                            .ToList()),
+                _ => new SoundforgeControlResult(false, "Soundforge does not recognise that control action.")
+            };
+        }
+        catch (Exception ex)
+        {
+            return new SoundforgeControlResult(false, ex.Message);
+        }
+    }
+
+    private SoundforgeControlResult ActivateSceneFromControl(string? sceneName)
+    {
+        var scene = _project.Scenes.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, sceneName?.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (scene is null)
+            return new SoundforgeControlResult(false, "That scene does not exist in the open project.");
+
+        SelectScene(scene, activate: false);
+        ActivateScene(scene);
+        return new SoundforgeControlResult(true, $"Activated {scene.Name}.");
+    }
+
+    private SoundforgeControlResult ToggleLayerFromControl(LayerPlaybackBehavior behavior)
+    {
+        if (_activeScene is null)
+            return new SoundforgeControlResult(false, "Activate a scene before controlling its layers.");
+
+        var sources = GetSceneSources(_activeScene)
+            .Where(source => source.Layer.PlaybackBehavior == behavior)
+            .ToList();
+        if (sources.Count == 0)
+            return new SoundforgeControlResult(false, $"The active scene has no {behavior} sources.");
+
+        var sourceIds = sources.Select(source => source.Track.Id).ToHashSet();
+        var activeSessions = _audioEngine.GetSessions()
+            .Where(session => sourceIds.Contains(session.TrackId))
+            .ToList();
+        if (activeSessions.Count > 0)
+        {
+            foreach (var session in activeSessions)
+                _audioEngine.Stop(session.SessionId, GetFadeOutDuration(_activeScene));
+            return new SoundforgeControlResult(true, $"Stopped {behavior}.");
+        }
+
+        var tracks = behavior == LayerPlaybackBehavior.Ambience
+            ? sources.Where(source => source.Track.AutoPlayOnSceneActivation).Select(source => source.Track).ToList()
+            : sources.Select(source => source.Track).ToList();
+        if (tracks.Count == 0)
+            return new SoundforgeControlResult(false, "Mark at least one ambience source as Auto Play before using this control.");
+
+        foreach (var track in tracks.GroupBy(track => track.Id).Select(group => group.First()))
+            StartTrackFromControl(track);
+        return new SoundforgeControlResult(true, $"Started {behavior}.");
+    }
+
+    private SoundforgeControlResult TriggerEffectFromControl(string? trackName)
+    {
+        if (_activeScene is null)
+            return new SoundforgeControlResult(false, "Activate a scene before triggering an effect.");
+
+        var track = GetSceneSources(_activeScene)
+            .Where(source => source.Layer.PlaybackBehavior == LayerPlaybackBehavior.Effects)
+            .Select(source => source.Track)
+            .FirstOrDefault(candidate => string.Equals(candidate.Name, trackName?.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (track is null)
+            return new SoundforgeControlResult(false, "That effect source does not exist in the active scene.");
+
+        StartTrackFromControl(track);
+        return new SoundforgeControlResult(true, $"Triggered {track.Name}.");
+    }
+
+    private SoundforgeControlResult StopAllFromControl()
+    {
+        _audioEngine.StopAll();
+        RefreshTrackVisibility();
+        return new SoundforgeControlResult(true, "Stopped all sources.");
+    }
+
+    private SoundforgeControlResult AdjustMasterFromControl(int ticks)
+    {
+        _muted = false;
+        MasterSlider.Value = Math.Clamp(MasterSlider.Value + ticks * 0.02, MasterSlider.Minimum, MasterSlider.Maximum);
+        return new SoundforgeControlResult(true, $"Master volume {MasterSlider.Value:P0}.", Level: MasterSlider.Value);
+    }
+
+    private SoundforgeControlResult AdjustLayerFromControl(LayerPlaybackBehavior behavior, int ticks)
+    {
+        if (_activeScene is null)
+            return new SoundforgeControlResult(false, "Activate a scene before controlling its layers.");
+
+        var layers = _activeScene.Layers.Where(layer => layer.PlaybackBehavior == behavior).ToList();
+        if (layers.Count == 0)
+            return new SoundforgeControlResult(false, $"The active scene has no {behavior} layer.");
+
+        foreach (var layer in layers)
+        {
+            layer.Volume = Math.Clamp(layer.Volume + ticks * 0.02, 0, 1);
+            ApplyLayerMix(layer.Id);
+        }
+        RenderMixer();
+        return new SoundforgeControlResult(true, $"{behavior} volume adjusted.", Level: layers[0].Volume);
+    }
+
+    private void StartTrackFromControl(Track track)
+    {
+        var sessionId = _audioEngine.Start(track, GetFadeInDuration(_activeScene));
+        AddTrackRow(sessionId, track);
+        ApplyLayerMix(track.LayerId);
+        EmptyTracksText.Visibility = Visibility.Collapsed;
+    }
+
+    private void SaveProject_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new SaveFileDialog
+        {
+            Filter = "Soundforge project|*.soundforge|All files|*.*",
+            DefaultExt = ".soundforge",
+            FileName = $"{_project.Name}.soundforge"
+        };
+
+        if (dialog.ShowDialog() != true)
+            return;
+
+        try
+        {
+            _project.MasterVolume = MasterSlider.Value;
+            SoundforgeProjectStore.Save(dialog.FileName, _project);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Unable to save project: {ex.Message}", "Soundforge", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void OpenProject_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Filter = "Soundforge project|*.soundforge|All files|*.*",
+            DefaultExt = ".soundforge"
+        };
+
+        if (dialog.ShowDialog() != true)
+            return;
+
+        try
+        {
+            var loadedProject = SoundforgeProjectStore.Load(dialog.FileName);
+            _audioEngine.StopAll();
+            _trackRows.Clear();
+            ActiveTracksPanel.Children.Clear();
+            _project = loadedProject;
+            _activeScene = null;
+            _selectedScene = null;
+            _muted = false;
+            MasterSlider.Value = _project.MasterVolume;
+
+            var savedOutputDevice = (OutputDeviceCombo.ItemsSource as IEnumerable<AudioDeviceInfo>)
+                ?.FirstOrDefault(device => device.Id == _project.PreferredOutputDeviceId);
+            if (savedOutputDevice is not null)
+                OutputDeviceCombo.SelectedItem = savedOutputDevice;
+
+            if (_project.Scenes.Count == 0)
+            {
+                AddScene("Demo");
+            }
+            else
+            {
+                foreach (var track in _project.Scenes
+                    .SelectMany(scene => scene.Layers)
+                    .SelectMany(layer => layer.Playlists)
+                    .SelectMany(playlist => playlist.Tracks)
+                    .GroupBy(track => track.Id)
+                    .Select(group => group.First()))
+                {
+                    AddTrackRow(null, track);
+                }
+
+                SelectScene(_project.Scenes[0], activate: false);
+                CurrentSceneText.Text = "ACTIVE SCENE: NONE";
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Unable to open project: {ex.Message}", "Soundforge", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void AddScene_Click(object sender, RoutedEventArgs e)
+    {
+        var name = NewSceneNameText.Text.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            MessageBox.Show("Enter a name for the new scene.", "Soundforge", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (_project.Scenes.Any(scene => string.Equals(scene.Name, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            MessageBox.Show("A scene with that name already exists.", "Soundforge", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        AddScene(name);
+        NewSceneNameText.Clear();
+    }
+
+    private void SaveSceneName_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedScene is null)
+            return;
+
+        var name = SelectedSceneNameText.Text.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            MessageBox.Show("A scene needs a name.", "Soundforge", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (_project.Scenes.Any(scene => scene != _selectedScene && string.Equals(scene.Name, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            MessageBox.Show("A scene with that name already exists.", "Soundforge", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        _selectedScene.Name = name;
+        RefreshSceneEditor();
+    }
+
+    private void DeleteScene_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedScene is null)
+            return;
+
+        if (_project.Scenes.Count == 1)
+        {
+            MessageBox.Show("Keep at least one scene in the project.", "Soundforge", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (MessageBox.Show($"Delete '{_selectedScene.Name}'?", "Soundforge", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            return;
+
+        var deletedActiveScene = _selectedScene == _activeScene;
+        _project.Scenes.Remove(_selectedScene);
+        var nextScene = _project.Scenes[0];
+        SelectScene(nextScene);
+        if (deletedActiveScene)
+            ActivateScene(nextScene);
+    }
+
+    private void AddLayer_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedScene is null)
+            return;
+
+        var name = NewLayerNameText.Text.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            MessageBox.Show("Enter a name for the new layer.", "Soundforge", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        _selectedScene.Layers.Add(new Layer { Name = name });
+        NewLayerNameText.Clear();
+        RenderLayers();
+        RefreshTrackLayerSelectors();
+    }
+
+    private void ShowSceneEditor_Click(object sender, RoutedEventArgs e)
+    {
+        SceneEditorPage.Visibility = Visibility.Visible;
+        MixerPage.Visibility = Visibility.Collapsed;
+    }
+
+    private void ShowMixer_Click(object sender, RoutedEventArgs e)
+    {
+        RenderMixer();
+        SceneEditorPage.Visibility = Visibility.Collapsed;
+        MixerPage.Visibility = Visibility.Visible;
+    }
+
+    private void TransitionSettings_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_selectedScene is not null)
+            _selectedScene.UseCrossfade = SceneCrossfadeCheckBox.IsChecked == true;
+    }
+
+    private void TrackViewMode_Changed(object sender, RoutedEventArgs e) => RefreshTrackVisibility();
+
+    private void TransitionDuration_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (_selectedScene is null)
+            return;
+
+        if (double.TryParse(FadeInSecondsText.Text, out var fadeIn) && fadeIn >= 0)
+            _selectedScene.FadeInSeconds = fadeIn;
+        else
+            FadeInSecondsText.Text = _selectedScene.FadeInSeconds.ToString("0.##");
+
+        if (double.TryParse(FadeOutSecondsText.Text, out var fadeOut) && fadeOut >= 0)
+            _selectedScene.FadeOutSeconds = fadeOut;
+        else
+            FadeOutSecondsText.Text = _selectedScene.FadeOutSeconds.ToString("0.##");
+    }
+
+    private void AddScene(string name)
+    {
+        var scene = new Scene
+        {
+            Name = name,
+            Layers = new List<Layer>
+            {
+                new() { Name = "Music", PlaybackBehavior = LayerPlaybackBehavior.Music },
+                new() { Name = "Ambience", PlaybackBehavior = LayerPlaybackBehavior.Ambience },
+                new() { Name = "Effects", PlaybackBehavior = LayerPlaybackBehavior.Effects }
+            }
+        };
+
+        _project.Scenes.Add(scene);
+        SelectScene(scene);
+    }
+
+    private void SelectScene(Scene scene, bool activate = true)
+    {
+        _selectedScene = scene;
+        RefreshSceneEditor();
+        if (activate && EditModeCheckBox.IsChecked != true)
+            ActivateScene(scene);
+    }
+
+    private void ActivateSelectedScene_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedScene is not null)
+            ActivateScene(_selectedScene);
+    }
+
+    private void RefreshSceneEditor()
+    {
+        if (_selectedScene is null)
+            return;
+
+        SelectedSceneNameText.Text = _selectedScene.Name;
+        SceneCrossfadeCheckBox.IsChecked = _selectedScene.UseCrossfade;
+        FadeInSecondsText.Text = _selectedScene.FadeInSeconds.ToString("0.##");
+        FadeOutSecondsText.Text = _selectedScene.FadeOutSeconds.ToString("0.##");
+        RefreshSceneButtons();
+        RenderLayers();
+        RefreshTrackVisibility();
+        RenderMixer();
+    }
+
+    private void RefreshSceneButtons()
+    {
+        SceneButtonsPanel.Children.Clear();
+        foreach (var scene in _project.Scenes)
+        {
+            var button = new Button
+            {
+                Content = scene.Name,
+                Padding = new Thickness(8),
+                Margin = new Thickness(0, 3, 0, 0),
+                FontWeight = scene == _selectedScene ? FontWeights.SemiBold : FontWeights.Normal
+            };
+            if (scene == _activeScene)
+                button.Content = $"▶ {scene.Name}";
+            button.Click += (_, _) => SelectScene(scene);
+            SceneButtonsPanel.Children.Add(button);
+        }
+    }
+
+    private void RenderLayers()
+    {
+        LayerPanel.Children.Clear();
+        if (_selectedScene is null)
+            return;
+
+        foreach (var layer in _selectedScene.Layers.ToList())
+        {
+            var name = new TextBox { Text = layer.Name, Height = 28, MinWidth = 180 };
+            var remove = new Button { Content = "Remove", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(8, 0, 0, 0) };
+            name.TextChanged += (_, _) => layer.Name = name.Text.Trim();
+            name.LostFocus += (_, _) => RefreshTrackLayerSelectors();
+            remove.Click += (_, _) =>
+            {
+                _selectedScene.Layers.Remove(layer);
+                foreach (var trackRow in _trackRows.Values.Where(trackRow => trackRow.Track.LayerId == layer.Id))
+                    trackRow.Track.LayerId = null;
+                RenderLayers();
+                RefreshTrackLayerSelectors();
+                RefreshTrackVisibility();
+            };
+
+            var row = new DockPanel { Margin = new Thickness(0, 6, 0, 0) };
+            DockPanel.SetDock(remove, Dock.Right);
+            row.Children.Add(remove);
+            row.Children.Add(name);
+            LayerPanel.Children.Add(row);
+        }
+    }
+
+    private void RenderMixer()
+    {
+        if (MixerLayerPanel is null || MixerTitleText is null)
+            return;
+
+        MixerLayerPanel.Children.Clear();
+        if (_selectedScene is null)
+        {
+            MixerTitleText.Text = "SCENE MIXER";
+            return;
+        }
+
+        MixerTitleText.Text = $"SCENE MIXER: {_selectedScene.Name.ToUpperInvariant()}";
+        foreach (var layer in _selectedScene.Layers)
+        {
+            var sourceCount = layer.Playlists.Sum(playlist => playlist.Tracks.Count);
+            var activeCount = _audioEngine.GetSessions().Count(session =>
+                _trackRows.TryGetValue(session.TrackId, out var trackRow) && trackRow.Track.LayerId == layer.Id);
+            var volume = new Slider { Minimum = 0, Maximum = 1, Value = layer.Volume, Width = 260, Margin = new Thickness(12, 0, 0, 0) };
+            var mute = new CheckBox { Content = "Mute", IsChecked = layer.IsMuted, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+            volume.ValueChanged += (_, args) =>
+            {
+                layer.Volume = args.NewValue;
+                ApplyLayerMix(layer.Id);
+            };
+            mute.Checked += (_, _) =>
+            {
+                layer.IsMuted = true;
+                ApplyLayerMix(layer.Id);
+            };
+            mute.Unchecked += (_, _) =>
+            {
+                layer.IsMuted = false;
+                ApplyLayerMix(layer.Id);
+            };
+
+            var heading = new TextBlock { Text = layer.Name.ToUpperInvariant(), FontSize = 16, FontWeight = FontWeights.SemiBold };
+            var details = new TextBlock { Text = $"{sourceCount} source{(sourceCount == 1 ? string.Empty : "s")} · {activeCount} active", Margin = new Thickness(0, 4, 0, 0), Foreground = System.Windows.Media.Brushes.LightGray };
+            var controls = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
+            controls.Children.Add(new TextBlock { Text = "Level", VerticalAlignment = VerticalAlignment.Center });
+            controls.Children.Add(volume);
+            controls.Children.Add(mute);
+
+            var card = new Border { Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(43, 46, 54)), CornerRadius = new CornerRadius(6), Padding = new Thickness(12), Margin = new Thickness(0, 0, 0, 10) };
+            var content = new StackPanel();
+            content.Children.Add(heading);
+            content.Children.Add(details);
+            content.Children.Add(controls);
+            card.Child = content;
+            MixerLayerPanel.Children.Add(card);
+        }
+    }
+
+    private void UpdateProgress()
+    {
+        AdvanceFinishedMusic();
+        var sessionsByTrackId = _audioEngine.GetSessions().ToDictionary(session => session.TrackId);
+        foreach (var row in _trackRows.Values)
+        {
+            if (sessionsByTrackId.TryGetValue(row.Track.Id, out var session))
+            {
+                row.SessionId = session.SessionId;
+                row.Progress.Value = session.Length.TotalSeconds <= 0
+                    ? 0
+                    : Math.Clamp(session.Position.TotalSeconds / session.Length.TotalSeconds, 0, 1);
+                row.Status.Text = session.IsPlaying ? "▶ Playing" : "⏸ Paused";
+                row.PlayPause.Content = session.IsPlaying ? "⏸ Pause" : "▶ Play";
+            }
+            else
+            {
+                row.SessionId = null;
+                row.Progress.Value = 0;
+                row.Status.Text = "■ Stopped";
+                row.PlayPause.Content = "▶ Play";
+            }
+        }
+
+        RefreshTrackVisibility();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _timer.Stop();
+        _audioEngine.Dispose();
+        base.OnClosed(e);
+    }
+
+    private void AddTrackRow(Guid? sessionId, Track track)
+    {
+        if (_trackRows.TryGetValue(track.Id, out var existingRow))
+        {
+            existingRow.SessionId = sessionId;
+            return;
+        }
+
+        var name = new TextBlock { Text = track.Name, FontWeight = FontWeights.SemiBold };
+        var status = new TextBlock { Text = "▶ Playing", Margin = new Thickness(0, 3, 0, 0) };
+        var progress = new ProgressBar { Height = 6, Minimum = 0, Maximum = 1, Margin = new Thickness(0, 8, 0, 0) };
+        var volume = new Slider { Minimum = 0, Maximum = 1, Value = track.Volume, Width = 170, Margin = new Thickness(8, 0, 0, 0) };
+        var autoPlay = new CheckBox { Content = "Auto play", IsChecked = track.AutoPlayOnSceneActivation, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+        var layerSelector = new ComboBox
+        {
+            Width = 170,
+            Margin = new Thickness(8, 0, 0, 0),
+            DisplayMemberPath = nameof(LayerChoice.Display),
+            SelectedValuePath = nameof(LayerChoice.LayerId)
+        };
+        var playPause = new Button { Content = "⏸ Pause", Padding = new Thickness(10, 4, 10, 4) };
+        var stop = new Button { Content = "■ Stop", Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(8, 0, 0, 0) };
+        var removeFromScene = new Button { Content = "Remove from Scene", Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(8, 0, 0, 0) };
+
+        playPause.Click += (_, _) =>
+        {
+            var row = _trackRows[track.Id];
+            var session = _audioEngine.GetSessions().FirstOrDefault(item => item.TrackId == track.Id);
+            if (session is null)
+            {
+                row.SessionId = _audioEngine.Start(track, GetFadeInDuration(_selectedScene));
+                ApplyLayerMix(track.LayerId);
+                return;
+            }
+
+            if (session.IsPlaying)
+            {
+                _audioEngine.Pause(session.SessionId);
+                playPause.Content = "▶ Play";
+            }
+            else
+            {
+                _audioEngine.Resume(session.SessionId);
+                playPause.Content = "⏸ Pause";
+            }
+        };
+        stop.Click += (_, _) => StopTrack(track.Id);
+        removeFromScene.Click += (_, _) => RemoveTrackFromSelectedScene(track);
+        volume.ValueChanged += (_, args) =>
+        {
+            var activeSession = _audioEngine.GetSessions().FirstOrDefault(item => item.TrackId == track.Id);
+            if (activeSession is not null)
+                _audioEngine.SetTrackVolume(activeSession.SessionId, (float)args.NewValue);
+            else
+                track.Volume = args.NewValue;
+        };
+        autoPlay.Checked += (_, _) => track.AutoPlayOnSceneActivation = true;
+        autoPlay.Unchecked += (_, _) => track.AutoPlayOnSceneActivation = false;
+        layerSelector.SelectionChanged += (_, _) =>
+        {
+            track.LayerId = layerSelector.SelectedValue is Guid layerId ? layerId : null;
+            ApplyLayerPlaybackDefaults(track);
+            AssignTrackToLayer(track, track.LayerId);
+            ApplyLayerMix(track.LayerId);
+            RefreshTrackVisibility();
+        };
+
+        var controls = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
+        controls.Children.Add(playPause);
+        controls.Children.Add(stop);
+        controls.Children.Add(removeFromScene);
+        controls.Children.Add(new TextBlock { Text = "Volume", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0) });
+        controls.Children.Add(volume);
+        controls.Children.Add(autoPlay);
+        controls.Children.Add(new TextBlock { Text = "Layer", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0) });
+        controls.Children.Add(layerSelector);
+
+        var panel = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
+        panel.Children.Add(name);
+        panel.Children.Add(status);
+        panel.Children.Add(progress);
+        panel.Children.Add(controls);
+        panel.Children.Add(new Separator { Margin = new Thickness(0, 10, 0, 0) });
+        ActiveTracksPanel.Children.Add(panel);
+        _trackRows[track.Id] = new TrackRow(panel, status, progress, track, layerSelector, playPause) { SessionId = sessionId };
+        RefreshTrackLayerSelectors();
+        RefreshTrackVisibility();
+    }
+
+    private void StopTrack(Guid trackId)
+    {
+        var session = _audioEngine.GetSessions().FirstOrDefault(item => item.TrackId == trackId);
+        if (session is not null)
+            _audioEngine.Stop(session.SessionId, GetFadeOutDuration(_selectedScene));
+    }
+
+    private void RemoveTrackFromSelectedScene(Track track)
+    {
+        if (_selectedScene is null)
+            return;
+
+        foreach (var playlist in _selectedScene.Layers.SelectMany(layer => layer.Playlists))
+            playlist.Tracks.RemoveAll(existing => existing.Id == track.Id);
+
+        if (_selectedScene.Layers.Any(layer => layer.Id == track.LayerId))
+            track.LayerId = null;
+
+        RefreshTrackLayerSelectors();
+        RefreshTrackVisibility();
+    }
+
+    private void RefreshTrackLayerSelectors()
+    {
+        var layerChoices = GetLayerChoices();
+        foreach (var trackRow in _trackRows.Values)
+        {
+            trackRow.LayerSelector.ItemsSource = layerChoices;
+            trackRow.LayerSelector.SelectedValue = trackRow.Track.LayerId;
+        }
+    }
+
+    private IReadOnlyList<LayerChoice> GetLayerChoices()
+    {
+        var choices = new List<LayerChoice> { new(null, "Unassigned") };
+        choices.AddRange(_project.Scenes.SelectMany(scene => scene.Layers.Select(layer => new LayerChoice(layer.Id, $"{scene.Name} / {layer.Name}"))));
+        return choices;
+    }
+
+    private void RefreshTrackVisibility()
+    {
+        if (SceneTracksHeader is null || EmptyTracksText is null)
+            return;
+
+        var selectedLayerIds = _selectedScene?.Layers.Select(layer => layer.Id).ToHashSet() ?? new HashSet<Guid>();
+        var isGlobalView = GlobalViewRadio.IsChecked == true;
+        var visibleTrackCount = 0;
+
+        foreach (var trackRow in _trackRows.Values)
+        {
+            var isVisible = isGlobalView || (trackRow.Track.LayerId is Guid layerId && selectedLayerIds.Contains(layerId));
+            trackRow.Panel.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
+            if (isVisible)
+                visibleTrackCount++;
+        }
+
+        SceneTracksHeader.Text = isGlobalView
+            ? "GLOBAL TRACKS"
+            : $"SCENE TRACKS: {_selectedScene?.Name.ToUpperInvariant() ?? "NONE"}";
+        EmptyTracksText.Text = isGlobalView
+            ? "Load one or more audio files to begin mixing."
+            : "No tracks are assigned to this scene.";
+        EmptyTracksText.Visibility = visibleTrackCount == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void ActivateScene(Scene scene)
+    {
+        var sceneSources = GetSceneSources(scene).ToList();
+        var musicSources = sceneSources
+            .Where(source => source.Layer.PlaybackBehavior == LayerPlaybackBehavior.Music)
+            .Select(source => source.Track)
+            .GroupBy(track => track.Id)
+            .Select(group => group.First())
+            .ToList();
+        var selectedMusic = musicSources.Count == 0 ? null : musicSources[Random.Shared.Next(musicSources.Count)];
+        var ambienceSources = sceneSources
+            .Where(source => source.Layer.PlaybackBehavior == LayerPlaybackBehavior.Ambience && source.Track.AutoPlayOnSceneActivation)
+            .Select(source => source.Track);
+        var targetTracks = ambienceSources
+            .Append(selectedMusic)
+            .Where(track => track is not null)
+            .Cast<Track>()
+            .GroupBy(track => track.Id)
+            .Select(group => group.First())
+            .ToList();
+        var targetTrackIds = targetTracks.Select(track => track.Id).ToHashSet();
+        var activeSessions = _audioEngine.GetSessions();
+
+        foreach (var session in activeSessions.Where(session => !targetTrackIds.Contains(session.TrackId)))
+            _audioEngine.Stop(session.SessionId, GetFadeOutDuration(scene));
+
+        var activeTrackIds = activeSessions.Select(session => session.TrackId).ToHashSet();
+        foreach (var track in targetTracks.Where(track => !activeTrackIds.Contains(track.Id)))
+        {
+            var sessionId = _audioEngine.Start(track, GetFadeInDuration(scene));
+            AddTrackRow(sessionId, track);
+            ApplyLayerMix(track.LayerId);
+            EmptyTracksText.Visibility = Visibility.Collapsed;
+        }
+
+        _activeScene = scene;
+        CurrentSceneText.Text = $"ACTIVE SCENE: {scene.Name.ToUpperInvariant()}";
+        RefreshSceneButtons();
+        RefreshTrackVisibility();
+    }
+
+    private IEnumerable<Track> GetSceneTracks(Scene scene) =>
+        scene.Layers.SelectMany(layer => layer.Playlists).SelectMany(playlist => playlist.Tracks);
+
+    private IEnumerable<(Layer Layer, Track Track)> GetSceneSources(Scene scene) =>
+        scene.Layers.SelectMany(layer => layer.Playlists.SelectMany(playlist => playlist.Tracks.Select(track => (layer, track))));
+
+    private IEnumerable<Track> GetMusicTracks(Scene scene) =>
+        GetSceneSources(scene)
+            .Where(source => source.Layer.PlaybackBehavior == LayerPlaybackBehavior.Music)
+            .Select(source => source.Track)
+            .GroupBy(track => track.Id)
+            .Select(group => group.First());
+
+    private Layer? GetLayer(Guid? layerId) =>
+        layerId is Guid id
+            ? _project.Scenes.SelectMany(scene => scene.Layers).FirstOrDefault(layer => layer.Id == id)
+            : null;
+
+    private void ApplyLayerMix(Guid? layerId)
+    {
+        var layer = GetLayer(layerId);
+        if (layer is null)
+            return;
+
+        var gain = layer.IsMuted ? 0f : (float)layer.Volume;
+        foreach (var session in _audioEngine.GetSessions())
+        {
+            if (_trackRows.TryGetValue(session.TrackId, out var row) && row.Track.LayerId == layer.Id)
+                _audioEngine.SetSessionLayerGain(session.SessionId, gain);
+        }
+    }
+
+    private void ApplyLayerPlaybackDefaults(Track track)
+    {
+        var behavior = GetLayer(track.LayerId)?.PlaybackBehavior;
+        track.Loop = behavior == LayerPlaybackBehavior.Ambience;
+        if (behavior == LayerPlaybackBehavior.Effects)
+            track.AutoPlayOnSceneActivation = false;
+
+        var session = _audioEngine.GetSessions().FirstOrDefault(item => item.TrackId == track.Id);
+        if (session is not null)
+            _audioEngine.SetLoop(session.SessionId, track.Loop);
+    }
+
+    private void AdvanceFinishedMusic()
+    {
+        if (_activeScene is null)
+            return;
+
+        var musicTracks = GetMusicTracks(_activeScene).ToList();
+        if (musicTracks.Count == 0)
+            return;
+
+        var musicTrackIds = musicTracks.Select(track => track.Id).ToHashSet();
+        var finishedMusicSessions = _audioEngine.GetSessions()
+            .Where(session => musicTrackIds.Contains(session.TrackId)
+                && !session.IsPlaying
+                && session.Length > TimeSpan.Zero
+                && session.Position >= session.Length)
+            .ToList();
+
+        foreach (var finishedSession in finishedMusicSessions)
+        {
+            _audioEngine.Stop(finishedSession.SessionId);
+            var candidates = musicTracks.Where(track => track.Id != finishedSession.TrackId).ToList();
+            var nextTrack = (candidates.Count > 0 ? candidates : musicTracks)[Random.Shared.Next(candidates.Count > 0 ? candidates.Count : musicTracks.Count)];
+            var nextSessionId = _audioEngine.Start(nextTrack, GetFadeInDuration(_activeScene));
+            AddTrackRow(nextSessionId, nextTrack);
+            ApplyLayerMix(nextTrack.LayerId);
+        }
+    }
+
+    private void AssignTrackToLayer(Track track, Guid? layerId)
+    {
+        foreach (var existingPlaylist in _project.Scenes.SelectMany(scene => scene.Layers).SelectMany(layer => layer.Playlists))
+            existingPlaylist.Tracks.RemoveAll(existing => existing.Id == track.Id);
+
+        if (layerId is not Guid targetLayerId)
+            return;
+
+        var layer = _project.Scenes.SelectMany(scene => scene.Layers).FirstOrDefault(candidate => candidate.Id == targetLayerId);
+        if (layer is null)
+            return;
+
+        var playlist = layer.Playlists.FirstOrDefault();
+        if (playlist is null)
+        {
+            playlist = new Playlist { Name = $"{layer.Name} Tracks" };
+            layer.Playlists.Add(playlist);
+        }
+
+        playlist.Tracks.Add(track);
+    }
+
+    private static TimeSpan GetFadeInDuration(Scene? scene) =>
+        scene is { UseCrossfade: true } ? TimeSpan.FromSeconds(scene.FadeInSeconds) : TimeSpan.Zero;
+
+    private static TimeSpan GetFadeOutDuration(Scene? scene) =>
+        scene is { UseCrossfade: true } ? TimeSpan.FromSeconds(scene.FadeOutSeconds) : TimeSpan.Zero;
+
+    private sealed class TrackRow(StackPanel panel, TextBlock status, ProgressBar progress, Track track, ComboBox layerSelector, Button playPause)
+    {
+        public StackPanel Panel { get; } = panel;
+        public TextBlock Status { get; } = status;
+        public ProgressBar Progress { get; } = progress;
+        public Track Track { get; } = track;
+        public ComboBox LayerSelector { get; } = layerSelector;
+        public Button PlayPause { get; } = playPause;
+        public Guid? SessionId { get; set; }
+    }
+
+    private sealed record LayerChoice(Guid? LayerId, string Display);
+}

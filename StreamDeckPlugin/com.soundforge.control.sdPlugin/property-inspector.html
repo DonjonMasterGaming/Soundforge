@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Soundforge settings</title>
+  <style>
+    body { color: #f2f2f2; background: #202228; font: 14px Segoe UI, sans-serif; margin: 14px; }
+    label { display: block; font-weight: 600; margin: 0 0 6px; }
+    select { box-sizing: border-box; width: 100%; color: #17181c; padding: 8px; }
+    p { color: #c8cbd3; line-height: 1.4; }
+    #settings { display: none; }
+  </style>
+</head>
+<body>
+  <div id="scene-settings" class="settings">
+    <label for="sceneName">Scene name</label>
+    <select id="sceneName"><option value="">Open Soundforge to load scenes…</option></select>
+    <p>The list comes from the project currently open in Soundforge.</p>
+  </div>
+  <div id="effect-settings" class="settings">
+    <label for="trackName">Effect source name</label>
+    <select id="trackName"><option value="">Activate a scene to load effects…</option></select>
+    <p>The list comes from the active scene’s Effects layer.</p>
+  </div>
+  <p id="no-settings">This action needs no setup.</p>
+  <script>
+    let socket, context, action;
+    const scene = document.getElementById('scene-settings');
+    const effect = document.getElementById('effect-settings');
+    const none = document.getElementById('no-settings');
+    const sceneInput = document.getElementById('sceneName');
+    const trackInput = document.getElementById('trackName');
+
+    window.connectElgatoStreamDeckSocket = (port, uuid, registerEvent, info, actionInfo) => {
+      const details = JSON.parse(actionInfo);
+      context = details.context;
+      action = details.action;
+      scene.style.display = action.endsWith('.scene') ? 'block' : 'none';
+      effect.style.display = action.endsWith('.effect') ? 'block' : 'none';
+      none.style.display = scene.style.display === 'none' && effect.style.display === 'none' ? 'block' : 'none';
+      socket = new WebSocket(`ws://127.0.0.1:${port}`);
+      socket.onopen = () => {
+        socket.send(JSON.stringify({ event: registerEvent, uuid }));
+        window.setTimeout(loadChoices, 150);
+      };
+      socket.onmessage = event => {
+        const message = JSON.parse(event.data);
+        if (message.event === 'didReceiveSettings') {
+          selectValue(sceneInput, message.payload.settings.sceneName || '');
+          selectValue(trackInput, message.payload.settings.trackName || '');
+        }
+        if (message.event === 'sendToPropertyInspector') {
+          if (message.payload.type === 'getScenes') populate(sceneInput, message.payload.values || [], 'No scenes found');
+          if (message.payload.type === 'getEffects') populate(trackInput, message.payload.values || [], 'No effects in active scene');
+        }
+      };
+    };
+
+    function loadChoices() {
+      if (!socket || socket.readyState !== WebSocket.OPEN || !action) return;
+      const command = action.endsWith('.scene') ? 'getScenes' : action.endsWith('.effect') ? 'getEffects' : null;
+      if (command) socket.send(JSON.stringify({ event: 'sendToPlugin', action, context, payload: { command } }));
+    }
+
+    function populate(select, values, placeholder) {
+      const chosen = select.value;
+      select.innerHTML = '';
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = placeholder;
+      select.appendChild(empty);
+      values.forEach(value => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        select.appendChild(option);
+      });
+      selectValue(select, chosen);
+    }
+
+    function selectValue(select, value) {
+      if ([...select.options].some(option => option.value === value)) select.value = value;
+    }
+
+    function save() {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      socket.send(JSON.stringify({
+        event: 'setSettings',
+        context,
+        payload: { sceneName: sceneInput.value.trim(), trackName: trackInput.value.trim() }
+      }));
+    }
+    sceneInput.addEventListener('change', save);
+    trackInput.addEventListener('change', save);
+  </script>
+</body>
+</html>

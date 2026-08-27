@@ -1,0 +1,39 @@
+# .NET and IDE output
+**/bin/
+**/obj/
+.vs/
+*.user
+*.suo
+
+# Soundforge build, release, test, and runtime data
+.build-temp/
+analysis/
+release/
+**/.publish-cache/
+**/publish/
+**/cache/
+**/ImportedSources/
+**/regression-work/
+
+# User projects, audio, and distributable packages
+*.soundforge
+*.autosave.json
+*.mp3
+*.wav
+*.ogg
+*.aiff
+*.aif
+*.zip
+*.streamDeckPlugin
+
+# Published Stream Deck runtime (retain source-facing manifest/UI/assets)
+StreamDeckPlugin/com.soundforge.control.sdPlugin/*
+!StreamDeckPlugin/com.soundforge.control.sdPlugin/manifest.json
+!StreamDeckPlugin/com.soundforge.control.sdPlugin/property-inspector.html
+!StreamDeckPlugin/com.soundforge.control.sdPlugin/assets/
+!StreamDeckPlugin/com.soundforge.control.sdPlugin/assets/**
+
+# Local scratch material
+comparison/
+share/
+
