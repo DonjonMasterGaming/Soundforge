@@ -1,7 +1,7 @@
 <Window x:Class="Soundforge.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Soundforge 0.8a.5" Height="820" Width="1400"
+        Title="Soundforge 0.8a.6" Height="820" Width="1400"
         MinHeight="600" MinWidth="960"
         Background="#17181C" Foreground="#F2F2F2">
     <Window.Resources>
@@ -99,6 +99,14 @@
                             </DockPanel>
                         </StackPanel>
                         </Expander>
+                    </Border>
+
+                    <Border Background="#202228" CornerRadius="8" Padding="12" Margin="0,0,0,10">
+                        <StackPanel>
+                            <TextBlock Text="MUSIC POOL QUICK SWITCH" FontWeight="Bold" Foreground="#9FD0FF"/>
+                            <TextBlock Text="Switch the selected scene's Music pool without opening Scene Layers." Margin="0,4,0,7"/>
+                            <WrapPanel x:Name="QuickMusicPoolPanel"/>
+                        </StackPanel>
                     </Border>
 
                     <Border Background="#202228" CornerRadius="8" Padding="12" Margin="0,0,0,10">

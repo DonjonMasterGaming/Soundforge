@@ -8,6 +8,7 @@ public sealed class Layer
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Name { get; set; } = "";
+    public bool IsDefault { get; set; }
     public LayerPlaybackBehavior PlaybackBehavior { get; set; } = LayerPlaybackBehavior.Manual;
     public double Volume { get; set; } = 1.0;
     public bool IsMuted { get; set; }

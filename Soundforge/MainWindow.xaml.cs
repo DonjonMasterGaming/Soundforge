@@ -471,9 +471,9 @@ public partial class MainWindow : Window
             Name = name,
             Layers = new List<Layer>
             {
-                CreateLayer("Music", LayerPlaybackBehavior.Music, "Main Pool"),
-                CreateLayer("Ambience", LayerPlaybackBehavior.Ambience, "Ambience Pool"),
-                CreateLayer("Effects", LayerPlaybackBehavior.Effects, "Effects Pool")
+                CreateLayer("Music", LayerPlaybackBehavior.Music, "Main Pool", isDefault: true),
+                CreateLayer("Ambience", LayerPlaybackBehavior.Ambience, "Ambience Pool", isDefault: true),
+                CreateLayer("Effects", LayerPlaybackBehavior.Effects, "Effects Pool", isDefault: true)
             }
         };
 
@@ -538,18 +538,36 @@ public partial class MainWindow : Window
         foreach (var layer in _selectedScene.Layers.ToList())
         {
             EnsureLayerHasPlaylist(layer);
-            var name = new TextBox { Text = layer.Name, Height = 28, MinWidth = 180 };
-            var remove = new Button { Content = "Remove", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(8, 0, 0, 0) };
+            var name = new TextBox
+            {
+                Text = layer.Name,
+                Height = 28,
+                MinWidth = 180,
+                IsReadOnly = layer.IsDefault,
+                ToolTip = layer.IsDefault ? "Default layer names are locked" : null
+            };
+            var remove = new Button
+            {
+                Content = layer.IsDefault ? "Locked" : "Remove",
+                IsEnabled = !layer.IsDefault,
+                Padding = new Thickness(8, 3, 8, 3),
+                Margin = new Thickness(8, 0, 0, 0)
+            };
             var behavior = new ComboBox
             {
                 ItemsSource = Enum.GetValues<LayerPlaybackBehavior>(),
                 SelectedItem = layer.PlaybackBehavior,
                 Width = 105,
                 Height = 28,
+                IsEnabled = !layer.IsDefault,
                 Margin = new Thickness(8, 0, 0, 0),
-                ToolTip = "Layer type"
+                ToolTip = layer.IsDefault ? "Default layer types are locked" : "Layer type"
             };
-            name.TextChanged += (_, _) => layer.Name = name.Text.Trim();
+            name.TextChanged += (_, _) =>
+            {
+                if (!layer.IsDefault)
+                    layer.Name = name.Text.Trim();
+            };
             name.LostFocus += (_, _) =>
             {
                 RefreshTrackLayerSelectors();
@@ -557,6 +575,8 @@ public partial class MainWindow : Window
             };
             remove.Click += (_, _) =>
             {
+                if (layer.IsDefault)
+                    return;
                 _selectedScene.Layers.Remove(layer);
                 foreach (var trackRow in _trackRows.Values.Where(trackRow => trackRow.Track.LayerId == layer.Id))
                     trackRow.Track.LayerId = null;
@@ -631,6 +651,7 @@ public partial class MainWindow : Window
                 {
                     RefreshTrackLayerSelectors();
                     RefreshTrackVisibility();
+                    RenderQuickMusicPools();
                 };
                 deletePool.Click += (_, _) => DeletePlaylistPool(layer, playlist);
                 poolRow.Children.Add(poolName);
@@ -721,14 +742,49 @@ public partial class MainWindow : Window
                 Child = layerPanel
             });
         }
+        RenderQuickMusicPools();
     }
 
-    private static Layer CreateLayer(string name, LayerPlaybackBehavior behavior, string playlistName)
+    private void RenderQuickMusicPools()
+    {
+        QuickMusicPoolPanel.Children.Clear();
+        if (_selectedScene is null)
+            return;
+
+        var musicLayers = _selectedScene.Layers.Where(layer => layer.PlaybackBehavior == LayerPlaybackBehavior.Music).ToList();
+        foreach (var layer in musicLayers)
+        {
+            foreach (var playlist in layer.Playlists)
+            {
+                var isActive = layer.ActivePlaylistId == playlist.Id;
+                var button = new Button
+                {
+                    Content = $"{(isActive ? "●" : "○")} {(musicLayers.Count > 1 ? $"{layer.Name} / " : "")}{playlist.Name}",
+                    Padding = new Thickness(12, 6, 12, 6),
+                    Margin = new Thickness(0, 0, 8, 5),
+                    FontWeight = isActive ? FontWeights.Bold : FontWeights.Normal,
+                    Background = isActive
+                        ? new SolidColorBrush(Color.FromRgb(43, 111, 173))
+                        : new SolidColorBrush(Color.FromRgb(220, 220, 220)),
+                    Foreground = isActive ? Brushes.White : Brushes.Black,
+                    ToolTip = isActive ? "Active Music pool" : $"Switch to {playlist.Name}"
+                };
+                button.Click += (_, _) => ActivatePlaylistPool(layer, playlist);
+                QuickMusicPoolPanel.Children.Add(button);
+            }
+        }
+
+        if (QuickMusicPoolPanel.Children.Count == 0)
+            QuickMusicPoolPanel.Children.Add(new TextBlock { Text = "No Music pools in the selected scene.", Foreground = Brushes.Gray });
+    }
+
+    private static Layer CreateLayer(string name, LayerPlaybackBehavior behavior, string playlistName, bool isDefault = false)
     {
         var playlist = new Playlist { Name = playlistName };
         return new Layer
         {
             Name = name,
+            IsDefault = isDefault,
             PlaybackBehavior = behavior,
             ActivePlaylistId = playlist.Id,
             Playlists = [playlist]
@@ -756,14 +812,12 @@ public partial class MainWindow : Window
 
     private static void NormalizePlaylistPools(SoundforgeProject project)
     {
-        project.FormatVersion = Math.Max(project.FormatVersion, 4);
+        project.FormatVersion = Math.Max(project.FormatVersion, 5);
         foreach (var scene in project.Scenes)
         {
+            EnsureDefaultSceneLayers(scene);
             foreach (var layer in scene.Layers)
-            {
-                InferCanonicalLayerBehavior(layer);
                 EnsureLayerHasPlaylist(layer);
-            }
 
             var validMusicPoolIds = scene.Layers
                 .Where(layer => layer.PlaybackBehavior == LayerPlaybackBehavior.Music)
@@ -779,14 +833,39 @@ public partial class MainWindow : Window
         }
     }
 
-    private static void InferCanonicalLayerBehavior(Layer layer)
+    private static void EnsureDefaultSceneLayers(Scene scene)
     {
-        if (layer.Name.Equals("Music", StringComparison.OrdinalIgnoreCase))
-            layer.PlaybackBehavior = LayerPlaybackBehavior.Music;
-        else if (layer.Name.Equals("Ambience", StringComparison.OrdinalIgnoreCase))
-            layer.PlaybackBehavior = LayerPlaybackBehavior.Ambience;
-        else if (layer.Name.Equals("Effects", StringComparison.OrdinalIgnoreCase))
-            layer.PlaybackBehavior = LayerPlaybackBehavior.Effects;
+        var definitions = new[]
+        {
+            (Name: "Music", Behavior: LayerPlaybackBehavior.Music, PoolName: "Main Pool"),
+            (Name: "Ambience", Behavior: LayerPlaybackBehavior.Ambience, PoolName: "Ambience Pool"),
+            (Name: "Effects", Behavior: LayerPlaybackBehavior.Effects, PoolName: "Effects Pool")
+        };
+        var defaults = new List<Layer>();
+        var claimedIds = new HashSet<Guid>();
+        foreach (var definition in definitions)
+        {
+            var layer = scene.Layers.FirstOrDefault(candidate =>
+                            !claimedIds.Contains(candidate.Id)
+                            && candidate.Name.Equals(definition.Name, StringComparison.OrdinalIgnoreCase))
+                        ?? scene.Layers.FirstOrDefault(candidate =>
+                            !claimedIds.Contains(candidate.Id)
+                            && candidate.PlaybackBehavior == definition.Behavior)
+                        ?? CreateLayer(definition.Name, definition.Behavior, definition.PoolName, isDefault: true);
+
+            if (!scene.Layers.Contains(layer))
+                scene.Layers.Add(layer);
+            layer.Name = definition.Name;
+            layer.PlaybackBehavior = definition.Behavior;
+            layer.IsDefault = true;
+            claimedIds.Add(layer.Id);
+            defaults.Add(layer);
+        }
+
+        var customLayers = scene.Layers.Where(layer => !claimedIds.Contains(layer.Id)).ToList();
+        foreach (var customLayer in customLayers)
+            customLayer.IsDefault = false;
+        scene.Layers = defaults.Concat(customLayers).ToList();
     }
 
     private void ActivatePlaylistPool(Layer layer, Playlist playlist)
