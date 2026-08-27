@@ -901,7 +901,6 @@ public partial class MainWindow : Window
             }
         }
 
-        RefreshTrackVisibility();
     }
 
     protected override void OnClosed(EventArgs e)
@@ -1117,6 +1116,12 @@ public partial class MainWindow : Window
             return;
 
         var isGlobalView = GlobalViewRadio.IsChecked == true;
+        foreach (var expander in ActiveTracksPanel.Children.OfType<Expander>().ToList())
+        {
+            if (expander.Content is Panel section)
+                section.Children.Clear();
+            expander.Content = null;
+        }
         ActiveTracksPanel.Children.Clear();
         var visibleTrackCount = 0;
         var scenes = isGlobalView ? _project.Scenes : _selectedScene is null ? [] : [_selectedScene];

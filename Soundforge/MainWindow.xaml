@@ -1,7 +1,7 @@
 <Window x:Class="Soundforge.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Soundforge 0.8a.3" Height="820" Width="1400"
+        Title="Soundforge 0.8a.4" Height="820" Width="1400"
         MinHeight="600" MinWidth="960"
         Background="#17181C" Foreground="#F2F2F2">
     <Window.Resources>
