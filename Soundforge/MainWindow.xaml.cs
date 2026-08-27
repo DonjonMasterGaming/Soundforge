@@ -202,7 +202,7 @@ public partial class MainWindow : Window
         }
 
         var tracks = behavior == LayerPlaybackBehavior.Ambience
-            ? sources.Where(source => source.Track.AutoPlayOnSceneActivation).Select(source => source.Track).ToList()
+            ? GetAutoAmbienceTracks(_activeScene).ToList()
             : sources.Select(source => source.Track).ToList();
         if (tracks.Count == 0)
             return new SoundforgeControlResult(false, "Mark at least one ambience source as Auto Play before using this control.");
@@ -612,6 +612,55 @@ public partial class MainWindow : Window
                 deletePool.Click += (_, _) => DeletePlaylistPool(layer, playlist);
                 poolRow.Children.Add(poolName);
                 playlistPanel.Children.Add(poolRow);
+
+                if (layer.PlaybackBehavior == LayerPlaybackBehavior.Ambience)
+                {
+                    var links = new WrapPanel { Margin = new Thickness(22, 3, 0, 3) };
+                    links.Children.Add(new TextBlock
+                    {
+                        Text = "AUTO WITH:",
+                        FontSize = 11,
+                        FontWeight = FontWeights.Bold,
+                        VerticalAlignment = VerticalAlignment.Center,
+                        Margin = new Thickness(0, 0, 8, 0)
+                    });
+                    var musicPools = _selectedScene.Layers
+                        .Where(candidate => candidate.PlaybackBehavior == LayerPlaybackBehavior.Music)
+                        .SelectMany(candidate => candidate.Playlists.Select(pool => (candidate, pool)))
+                        .ToList();
+                    if (musicPools.Count == 0)
+                    {
+                        links.Children.Add(new TextBlock { Text = "No Music pools available", Foreground = Brushes.Gray });
+                    }
+                    else
+                    {
+                        foreach (var (musicLayer, musicPool) in musicPools)
+                        {
+                            var link = new CheckBox
+                            {
+                                Content = musicLayer.Name == "Music" ? musicPool.Name : $"{musicLayer.Name} / {musicPool.Name}",
+                                IsChecked = playlist.AutoActivateWithMusicPlaylistIds.Contains(musicPool.Id),
+                                Margin = new Thickness(0, 0, 12, 0),
+                                ToolTip = "Automatically activate this Ambience pool with the selected Music pool"
+                            };
+                            link.Checked += (_, _) =>
+                            {
+                                if (!playlist.AutoActivateWithMusicPlaylistIds.Contains(musicPool.Id))
+                                    playlist.AutoActivateWithMusicPlaylistIds.Add(musicPool.Id);
+                                if (_activeScene == _selectedScene)
+                                    SyncLinkedAmbience(_selectedScene);
+                            };
+                            link.Unchecked += (_, _) =>
+                            {
+                                playlist.AutoActivateWithMusicPlaylistIds.Remove(musicPool.Id);
+                                if (_activeScene == _selectedScene)
+                                    SyncLinkedAmbience(_selectedScene);
+                            };
+                            links.Children.Add(link);
+                        }
+                    }
+                    playlistPanel.Children.Add(links);
+                }
             }
 
             var newPoolName = new TextBox { Height = 26, MinWidth = 180, ToolTip = "New playlist pool name" };
@@ -684,9 +733,24 @@ public partial class MainWindow : Window
 
     private static void NormalizePlaylistPools(SoundforgeProject project)
     {
-        project.FormatVersion = Math.Max(project.FormatVersion, 3);
-        foreach (var layer in project.Scenes.SelectMany(scene => scene.Layers))
-            EnsureLayerHasPlaylist(layer);
+        project.FormatVersion = Math.Max(project.FormatVersion, 4);
+        foreach (var scene in project.Scenes)
+        {
+            foreach (var layer in scene.Layers)
+                EnsureLayerHasPlaylist(layer);
+
+            var validMusicPoolIds = scene.Layers
+                .Where(layer => layer.PlaybackBehavior == LayerPlaybackBehavior.Music)
+                .SelectMany(layer => layer.Playlists)
+                .Select(playlist => playlist.Id)
+                .ToHashSet();
+            foreach (var ambiencePool in scene.Layers
+                         .Where(layer => layer.PlaybackBehavior == LayerPlaybackBehavior.Ambience)
+                         .SelectMany(layer => layer.Playlists))
+            {
+                ambiencePool.AutoActivateWithMusicPlaylistIds.RemoveAll(id => !validMusicPoolIds.Contains(id));
+            }
+        }
     }
 
     private void ActivatePlaylistPool(Layer layer, Playlist playlist)
@@ -715,13 +779,15 @@ public partial class MainWindow : Window
             _audioEngine.Stop(session.SessionId, GetFadeOutDuration(_activeScene));
         }
 
-        if (playlist.Tracks.Count == 0)
-            return;
+        if (playlist.Tracks.Count > 0)
+        {
+            var track = playlist.Tracks[Random.Shared.Next(playlist.Tracks.Count)];
+            var sessionId = _audioEngine.Start(track, GetFadeInDuration(_activeScene));
+            AddTrackRow(sessionId, track);
+            ApplyLayerMix(layer.Id);
+        }
 
-        var track = playlist.Tracks[Random.Shared.Next(playlist.Tracks.Count)];
-        var sessionId = _audioEngine.Start(track, GetFadeInDuration(_activeScene));
-        AddTrackRow(sessionId, track);
-        ApplyLayerMix(layer.Id);
+        SyncLinkedAmbience(_activeScene);
     }
 
     private void DeletePlaylistPool(Layer layer, Playlist playlist)
@@ -740,6 +806,12 @@ public partial class MainWindow : Window
         }
 
         layer.Playlists.Remove(playlist);
+        foreach (var ambiencePool in _selectedScene?.Layers
+                     .Where(candidate => candidate.PlaybackBehavior == LayerPlaybackBehavior.Ambience)
+                     .SelectMany(candidate => candidate.Playlists) ?? [])
+        {
+            ambiencePool.AutoActivateWithMusicPlaylistIds.Remove(playlist.Id);
+        }
         if (layer.ActivePlaylistId == playlist.Id)
         {
             layer.ActivePlaylistId = fallback.Id;
@@ -1071,13 +1143,23 @@ public partial class MainWindow : Window
                     var heading = isGlobalView
                         ? $"{scene.Name.ToUpperInvariant()}  /  {layer.Name.ToUpperInvariant()}  /  {playlist.Name.ToUpperInvariant()}{activeMarker}"
                         : $"{layer.Name.ToUpperInvariant()}  /  {playlist.Name.ToUpperInvariant()}{activeMarker}";
-                    ActiveTracksPanel.Children.Add(CreateLayerHeading(heading));
+                    var section = new StackPanel();
                     foreach (var row in rows)
                     {
                         row.Panel.Visibility = Visibility.Visible;
-                        ActiveTracksPanel.Children.Add(row.Panel);
+                        section.Children.Add(row.Panel);
                         visibleTrackCount++;
                     }
+
+                    var expander = new Expander
+                    {
+                        Header = CreateLayerHeading(heading),
+                        Content = section,
+                        IsExpanded = playlist.IsExpanded
+                    };
+                    expander.Expanded += (_, _) => playlist.IsExpanded = true;
+                    expander.Collapsed += (_, _) => playlist.IsExpanded = false;
+                    ActiveTracksPanel.Children.Add(expander);
                 }
             }
         }
@@ -1087,13 +1169,19 @@ public partial class MainWindow : Window
             var unassignedRows = _trackRows.Values.Where(row => row.Track.LayerId is null).ToList();
             if (unassignedRows.Count > 0)
             {
-                ActiveTracksPanel.Children.Add(CreateLayerHeading("UNASSIGNED SOURCES"));
+                var section = new StackPanel();
                 foreach (var row in unassignedRows)
                 {
                     row.Panel.Visibility = Visibility.Visible;
-                    ActiveTracksPanel.Children.Add(row.Panel);
+                    section.Children.Add(row.Panel);
                     visibleTrackCount++;
                 }
+                ActiveTracksPanel.Children.Add(new Expander
+                {
+                    Header = CreateLayerHeading("UNASSIGNED SOURCES"),
+                    Content = section,
+                    IsExpanded = false
+                });
             }
         }
 
@@ -1120,14 +1208,59 @@ public partial class MainWindow : Window
         }
     };
 
+    private IReadOnlyList<Playlist> GetAutoAmbiencePools(Scene scene)
+    {
+        var ambiencePools = scene.Layers
+            .Where(layer => layer.PlaybackBehavior == LayerPlaybackBehavior.Ambience)
+            .SelectMany(layer => layer.Playlists)
+            .ToList();
+        var activeMusicPoolIds = scene.Layers
+            .Where(layer => layer.PlaybackBehavior == LayerPlaybackBehavior.Music && layer.ActivePlaylistId is not null)
+            .Select(layer => layer.ActivePlaylistId!.Value)
+            .ToHashSet();
+        var hasConfiguredLinks = ambiencePools.Any(playlist => playlist.AutoActivateWithMusicPlaylistIds.Count > 0);
+        return hasConfiguredLinks
+            ? ambiencePools.Where(playlist => playlist.AutoActivateWithMusicPlaylistIds.Any(activeMusicPoolIds.Contains)).ToList()
+            : ambiencePools;
+    }
+
+    private IEnumerable<Track> GetAutoAmbienceTracks(Scene scene) =>
+        GetAutoAmbiencePools(scene)
+            .SelectMany(playlist => playlist.Tracks)
+            .Where(track => track.AutoPlayOnSceneActivation)
+            .GroupBy(track => track.Id)
+            .Select(group => group.First());
+
+    private void SyncLinkedAmbience(Scene scene)
+    {
+        var allAmbienceTrackIds = scene.Layers
+            .Where(layer => layer.PlaybackBehavior == LayerPlaybackBehavior.Ambience)
+            .SelectMany(layer => layer.Playlists)
+            .SelectMany(playlist => playlist.Tracks)
+            .Select(track => track.Id)
+            .ToHashSet();
+        var targetTracks = GetAutoAmbienceTracks(scene).ToList();
+        var targetIds = targetTracks.Select(track => track.Id).ToHashSet();
+        var activeSessions = _audioEngine.GetSessions();
+
+        foreach (var session in activeSessions.Where(session => allAmbienceTrackIds.Contains(session.TrackId) && !targetIds.Contains(session.TrackId)))
+            _audioEngine.Stop(session.SessionId, GetFadeOutDuration(scene));
+
+        var activeTrackIds = activeSessions.Select(session => session.TrackId).ToHashSet();
+        foreach (var track in targetTracks.Where(track => !activeTrackIds.Contains(track.Id)))
+        {
+            var sessionId = _audioEngine.Start(track, GetFadeInDuration(scene));
+            AddTrackRow(sessionId, track);
+            ApplyLayerMix(track.LayerId);
+        }
+    }
+
     private void ActivateScene(Scene scene)
     {
         var sceneSources = GetSceneSources(scene).ToList();
         var musicSources = GetMusicTracks(scene).ToList();
         var selectedMusic = musicSources.Count == 0 ? null : musicSources[Random.Shared.Next(musicSources.Count)];
-        var ambienceSources = sceneSources
-            .Where(source => source.Layer.PlaybackBehavior == LayerPlaybackBehavior.Ambience && source.Track.AutoPlayOnSceneActivation)
-            .Select(source => source.Track);
+        var ambienceSources = GetAutoAmbienceTracks(scene);
         var targetTracks = ambienceSources
             .Append(selectedMusic)
             .Where(track => track is not null)
