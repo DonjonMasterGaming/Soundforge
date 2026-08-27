@@ -2,7 +2,7 @@ namespace Soundforge.Models;
 
 public sealed class SoundforgeProject
 {
-    public int FormatVersion { get; set; } = 2;
+    public int FormatVersion { get; set; } = 3;
     public string Name { get; set; } = "New Project";
     public double MasterVolume { get; set; } = 0.8;
     public string? PreferredOutputDeviceId { get; set; }

@@ -25,6 +25,7 @@ public partial class MainWindow : Window
     private Scene? _selectedScene;
     private Scene? _activeScene;
     private bool _muted;
+    private bool _refreshingTrackSelectors;
 
     public MainWindow()
     {
@@ -308,6 +309,7 @@ public partial class MainWindow : Window
             _trackRows.Clear();
             ActiveTracksPanel.Children.Clear();
             _project = loadedProject;
+            NormalizePlaylistPools(_project);
             _activeScene = null;
             _selectedScene = null;
             _muted = false;
@@ -419,7 +421,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        _selectedScene.Layers.Add(new Layer { Name = name });
+        _selectedScene.Layers.Add(CreateLayer(name, LayerPlaybackBehavior.Manual, $"{name} Pool"));
         NewLayerNameText.Clear();
         RenderLayers();
         RefreshTrackLayerSelectors();
@@ -469,9 +471,9 @@ public partial class MainWindow : Window
             Name = name,
             Layers = new List<Layer>
             {
-                new() { Name = "Music", PlaybackBehavior = LayerPlaybackBehavior.Music },
-                new() { Name = "Ambience", PlaybackBehavior = LayerPlaybackBehavior.Ambience },
-                new() { Name = "Effects", PlaybackBehavior = LayerPlaybackBehavior.Effects }
+                CreateLayer("Music", LayerPlaybackBehavior.Music, "Main Pool"),
+                CreateLayer("Ambience", LayerPlaybackBehavior.Ambience, "Ambience Pool"),
+                CreateLayer("Effects", LayerPlaybackBehavior.Effects, "Effects Pool")
             }
         };
 
@@ -535,10 +537,15 @@ public partial class MainWindow : Window
 
         foreach (var layer in _selectedScene.Layers.ToList())
         {
+            EnsureLayerHasPlaylist(layer);
             var name = new TextBox { Text = layer.Name, Height = 28, MinWidth = 180 };
             var remove = new Button { Content = "Remove", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(8, 0, 0, 0) };
             name.TextChanged += (_, _) => layer.Name = name.Text.Trim();
-            name.LostFocus += (_, _) => RefreshTrackLayerSelectors();
+            name.LostFocus += (_, _) =>
+            {
+                RefreshTrackLayerSelectors();
+                RefreshTrackVisibility();
+            };
             remove.Click += (_, _) =>
             {
                 _selectedScene.Layers.Remove(layer);
@@ -549,12 +556,200 @@ public partial class MainWindow : Window
                 RefreshTrackVisibility();
             };
 
-            var row = new DockPanel { Margin = new Thickness(0, 6, 0, 0) };
+            var row = new DockPanel();
             DockPanel.SetDock(remove, Dock.Right);
             row.Children.Add(remove);
             row.Children.Add(name);
-            LayerPanel.Children.Add(row);
+
+            var playlistPanel = new StackPanel { Margin = new Thickness(10, 8, 0, 0) };
+            playlistPanel.Children.Add(new TextBlock
+            {
+                Text = layer.PlaybackBehavior == LayerPlaybackBehavior.Music ? "MUSIC PLAYLIST POOLS — choose one active pool" : "PLAYLIST POOLS",
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                Foreground = new SolidColorBrush(Color.FromRgb(159, 208, 255)),
+                Margin = new Thickness(0, 0, 0, 3)
+            });
+
+            foreach (var playlist in layer.Playlists.ToList())
+            {
+                var poolName = new TextBox { Text = playlist.Name, Height = 26, MinWidth = 180 };
+                var poolCount = new TextBlock
+                {
+                    Text = $"{playlist.Tracks.Count} source{(playlist.Tracks.Count == 1 ? "" : "s")}",
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(8, 0, 8, 0),
+                    Foreground = new SolidColorBrush(Color.FromRgb(200, 203, 211))
+                };
+                var deletePool = new Button { Content = "Delete Pool", Padding = new Thickness(7, 2, 7, 2) };
+                var poolRow = new DockPanel { Margin = new Thickness(0, 3, 0, 0) };
+                DockPanel.SetDock(deletePool, Dock.Right);
+                DockPanel.SetDock(poolCount, Dock.Right);
+                poolRow.Children.Add(deletePool);
+                poolRow.Children.Add(poolCount);
+
+                if (layer.PlaybackBehavior == LayerPlaybackBehavior.Music)
+                {
+                    var active = new RadioButton
+                    {
+                        GroupName = $"ActivePool-{layer.Id}",
+                        IsChecked = layer.ActivePlaylistId == playlist.Id,
+                        ToolTip = "Use this playlist when the scene is active",
+                        VerticalAlignment = VerticalAlignment.Center,
+                        Margin = new Thickness(0, 0, 8, 0)
+                    };
+                    active.Checked += (_, _) => ActivatePlaylistPool(layer, playlist);
+                    DockPanel.SetDock(active, Dock.Left);
+                    poolRow.Children.Add(active);
+                }
+
+                poolName.TextChanged += (_, _) => playlist.Name = poolName.Text.Trim();
+                poolName.LostFocus += (_, _) =>
+                {
+                    RefreshTrackLayerSelectors();
+                    RefreshTrackVisibility();
+                };
+                deletePool.Click += (_, _) => DeletePlaylistPool(layer, playlist);
+                poolRow.Children.Add(poolName);
+                playlistPanel.Children.Add(poolRow);
+            }
+
+            var newPoolName = new TextBox { Height = 26, MinWidth = 180, ToolTip = "New playlist pool name" };
+            var addPool = new Button { Content = "＋ Add Pool", Padding = new Thickness(8, 2, 8, 2), Margin = new Thickness(8, 0, 0, 0) };
+            addPool.Click += (_, _) =>
+            {
+                var poolName = newPoolName.Text.Trim();
+                if (string.IsNullOrWhiteSpace(poolName))
+                    return;
+
+                var playlist = new Playlist { Name = poolName };
+                layer.Playlists.Add(playlist);
+                layer.ActivePlaylistId ??= playlist.Id;
+                RenderLayers();
+                RefreshTrackLayerSelectors();
+                RefreshTrackVisibility();
+            };
+            var addPoolRow = new DockPanel { Margin = new Thickness(0, 7, 0, 0) };
+            DockPanel.SetDock(addPool, Dock.Right);
+            addPoolRow.Children.Add(addPool);
+            addPoolRow.Children.Add(newPoolName);
+            playlistPanel.Children.Add(addPoolRow);
+
+            var layerPanel = new StackPanel();
+            layerPanel.Children.Add(row);
+            layerPanel.Children.Add(playlistPanel);
+            LayerPanel.Children.Add(new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(25, 27, 32)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(55, 60, 70)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(8),
+                Margin = new Thickness(0, 6, 0, 0),
+                Child = layerPanel
+            });
         }
+    }
+
+    private static Layer CreateLayer(string name, LayerPlaybackBehavior behavior, string playlistName)
+    {
+        var playlist = new Playlist { Name = playlistName };
+        return new Layer
+        {
+            Name = name,
+            PlaybackBehavior = behavior,
+            ActivePlaylistId = playlist.Id,
+            Playlists = [playlist]
+        };
+    }
+
+    private static void EnsureLayerHasPlaylist(Layer layer)
+    {
+        foreach (var playlist in layer.Playlists)
+        {
+            if (playlist.Id == Guid.Empty)
+                playlist.Id = Guid.NewGuid();
+            if (string.IsNullOrWhiteSpace(playlist.Name))
+                playlist.Name = "Playlist Pool";
+            foreach (var track in playlist.Tracks)
+                track.LayerId = layer.Id;
+        }
+
+        if (layer.Playlists.Count == 0)
+            layer.Playlists.Add(new Playlist { Name = $"{layer.Name} Pool" });
+
+        if (layer.ActivePlaylistId is not Guid activeId || layer.Playlists.All(playlist => playlist.Id != activeId))
+            layer.ActivePlaylistId = layer.Playlists[0].Id;
+    }
+
+    private static void NormalizePlaylistPools(SoundforgeProject project)
+    {
+        project.FormatVersion = Math.Max(project.FormatVersion, 3);
+        foreach (var layer in project.Scenes.SelectMany(scene => scene.Layers))
+            EnsureLayerHasPlaylist(layer);
+    }
+
+    private void ActivatePlaylistPool(Layer layer, Playlist playlist)
+    {
+        if (layer.ActivePlaylistId == playlist.Id)
+            return;
+
+        layer.ActivePlaylistId = playlist.Id;
+        if (_activeScene == _selectedScene && _activeScene?.Layers.Contains(layer) == true && layer.PlaybackBehavior == LayerPlaybackBehavior.Music)
+            SwitchLiveMusicPool(layer, playlist);
+
+        RenderLayers();
+        RefreshTrackLayerSelectors();
+        RefreshTrackVisibility();
+    }
+
+    private void SwitchLiveMusicPool(Layer layer, Playlist playlist)
+    {
+        if (_activeScene is null)
+            return;
+
+        foreach (var session in _audioEngine.GetSessions()
+                     .Where(session => _trackRows.TryGetValue(session.TrackId, out var row) && row.Track.LayerId == layer.Id)
+                     .ToList())
+        {
+            _audioEngine.Stop(session.SessionId, GetFadeOutDuration(_activeScene));
+        }
+
+        if (playlist.Tracks.Count == 0)
+            return;
+
+        var track = playlist.Tracks[Random.Shared.Next(playlist.Tracks.Count)];
+        var sessionId = _audioEngine.Start(track, GetFadeInDuration(_activeScene));
+        AddTrackRow(sessionId, track);
+        ApplyLayerMix(layer.Id);
+    }
+
+    private void DeletePlaylistPool(Layer layer, Playlist playlist)
+    {
+        if (layer.Playlists.Count == 1)
+        {
+            MessageBox.Show("Each layer needs at least one playlist pool.", "Soundforge", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var fallback = layer.Playlists.First(candidate => candidate.Id != playlist.Id);
+        foreach (var track in playlist.Tracks)
+        {
+            if (fallback.Tracks.All(existing => existing.Id != track.Id))
+                fallback.Tracks.Add(track);
+        }
+
+        layer.Playlists.Remove(playlist);
+        if (layer.ActivePlaylistId == playlist.Id)
+        {
+            layer.ActivePlaylistId = fallback.Id;
+            if (_activeScene == _selectedScene && layer.PlaybackBehavior == LayerPlaybackBehavior.Music)
+                SwitchLiveMusicPool(layer, fallback);
+        }
+
+        RenderLayers();
+        RefreshTrackLayerSelectors();
+        RefreshTrackVisibility();
     }
 
     private void RenderMixer()
@@ -664,6 +859,14 @@ public partial class MainWindow : Window
             DisplayMemberPath = nameof(LayerChoice.Display),
             SelectedValuePath = nameof(LayerChoice.LayerId)
         };
+        var playlistSelector = new ComboBox
+        {
+            Width = 150,
+            Margin = new Thickness(6, 0, 0, 0),
+            DisplayMemberPath = nameof(PlaylistChoice.Display),
+            SelectedValuePath = nameof(PlaylistChoice.PlaylistId),
+            ToolTip = "Playlist pool"
+        };
         var playPause = new Button { Content = "⏸ Pause", Padding = new Thickness(8, 3, 8, 3) };
         var stop = new Button { Content = "■ Stop", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(6, 0, 0, 0) };
         var removeFromScene = new Button { Content = "Remove from Scene", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(6, 0, 0, 0) };
@@ -706,11 +909,27 @@ public partial class MainWindow : Window
         autoPlay.Unchecked += (_, _) => track.AutoPlayOnSceneActivation = false;
         layerSelector.SelectionChanged += (_, _) =>
         {
+            if (_refreshingTrackSelectors)
+                return;
+
             track.LayerId = layerSelector.SelectedValue is Guid layerId ? layerId : null;
             ApplyLayerPlaybackDefaults(track);
             AssignTrackToLayer(track, track.LayerId);
             ApplyLayerMix(track.LayerId);
+            RefreshTrackLayerSelectors();
             RefreshTrackVisibility();
+        };
+        playlistSelector.SelectionChanged += (_, _) =>
+        {
+            if (_refreshingTrackSelectors || playlistSelector.SelectedValue is not Guid playlistId)
+                return;
+
+            AssignTrackToPlaylist(track, playlistId);
+            ApplyLayerPlaybackDefaults(track);
+            ApplyLayerMix(track.LayerId);
+            RefreshTrackLayerSelectors();
+            RefreshTrackVisibility();
+            RenderLayers();
         };
 
         var controls = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
@@ -723,6 +942,8 @@ public partial class MainWindow : Window
         controls.Children.Add(autoPlay);
         controls.Children.Add(new TextBlock { Text = "Layer", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) });
         controls.Children.Add(layerSelector);
+        controls.Children.Add(new TextBlock { Text = "Pool", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) });
+        controls.Children.Add(playlistSelector);
 
         var panel = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
         panel.Children.Add(name);
@@ -731,7 +952,7 @@ public partial class MainWindow : Window
         panel.Children.Add(controls);
         panel.Children.Add(new Separator { Margin = new Thickness(0, 10, 0, 0) });
         ActiveTracksPanel.Children.Add(panel);
-        _trackRows[track.Id] = new TrackRow(panel, status, progress, track, layerSelector, playPause) { SessionId = sessionId };
+        _trackRows[track.Id] = new TrackRow(panel, status, progress, track, layerSelector, playlistSelector, playPause) { SessionId = sessionId };
         RefreshTrackLayerSelectors();
         RefreshTrackVisibility();
     }
@@ -782,11 +1003,21 @@ public partial class MainWindow : Window
 
     private void RefreshTrackLayerSelectors()
     {
+        _refreshingTrackSelectors = true;
         var layerChoices = GetLayerChoices();
-        foreach (var trackRow in _trackRows.Values)
+        try
         {
-            trackRow.LayerSelector.ItemsSource = layerChoices;
-            trackRow.LayerSelector.SelectedValue = trackRow.Track.LayerId;
+            foreach (var trackRow in _trackRows.Values)
+            {
+                trackRow.LayerSelector.ItemsSource = layerChoices;
+                trackRow.LayerSelector.SelectedValue = trackRow.Track.LayerId;
+                trackRow.PlaylistSelector.ItemsSource = GetPlaylistChoices(trackRow.Track.LayerId);
+                trackRow.PlaylistSelector.SelectedValue = GetTrackPlaylistId(trackRow.Track.Id);
+            }
+        }
+        finally
+        {
+            _refreshingTrackSelectors = false;
         }
     }
 
@@ -797,6 +1028,17 @@ public partial class MainWindow : Window
         return choices;
     }
 
+    private IReadOnlyList<PlaylistChoice> GetPlaylistChoices(Guid? layerId)
+    {
+        var layer = GetLayer(layerId);
+        return layer?.Playlists.Select(playlist => new PlaylistChoice(playlist.Id, playlist.Name)).ToList() ?? [];
+    }
+
+    private Guid? GetTrackPlaylistId(Guid trackId) =>
+        _project.Scenes.SelectMany(scene => scene.Layers)
+            .SelectMany(layer => layer.Playlists)
+            .FirstOrDefault(playlist => playlist.Tracks.Any(track => track.Id == trackId))?.Id;
+
     private void RefreshTrackVisibility()
     {
         if (SceneTracksHeader is null || EmptyTracksText is null)
@@ -806,22 +1048,36 @@ public partial class MainWindow : Window
         ActiveTracksPanel.Children.Clear();
         var visibleTrackCount = 0;
         var scenes = isGlobalView ? _project.Scenes : _selectedScene is null ? [] : [_selectedScene];
+        var renderedTrackIds = new HashSet<Guid>();
 
         foreach (var scene in scenes)
         {
             foreach (var layer in scene.Layers)
             {
-                var rows = _trackRows.Values.Where(row => row.Track.LayerId == layer.Id).ToList();
-                if (rows.Count == 0)
-                    continue;
-
-                var heading = isGlobalView ? $"{scene.Name.ToUpperInvariant()}  /  {layer.Name.ToUpperInvariant()}" : layer.Name.ToUpperInvariant();
-                ActiveTracksPanel.Children.Add(CreateLayerHeading(heading));
-                foreach (var row in rows)
+                foreach (var playlist in layer.Playlists)
                 {
-                    row.Panel.Visibility = Visibility.Visible;
-                    ActiveTracksPanel.Children.Add(row.Panel);
-                    visibleTrackCount++;
+                    var rows = playlist.Tracks
+                        .Where(track => renderedTrackIds.Add(track.Id))
+                        .Select(track => _trackRows.TryGetValue(track.Id, out var row) ? row : null)
+                        .Where(row => row is not null)
+                        .Cast<TrackRow>()
+                        .ToList();
+                    if (rows.Count == 0)
+                        continue;
+
+                    var activeMarker = layer.PlaybackBehavior == LayerPlaybackBehavior.Music && layer.ActivePlaylistId == playlist.Id
+                        ? "  •  ACTIVE"
+                        : string.Empty;
+                    var heading = isGlobalView
+                        ? $"{scene.Name.ToUpperInvariant()}  /  {layer.Name.ToUpperInvariant()}  /  {playlist.Name.ToUpperInvariant()}{activeMarker}"
+                        : $"{layer.Name.ToUpperInvariant()}  /  {playlist.Name.ToUpperInvariant()}{activeMarker}";
+                    ActiveTracksPanel.Children.Add(CreateLayerHeading(heading));
+                    foreach (var row in rows)
+                    {
+                        row.Panel.Visibility = Visibility.Visible;
+                        ActiveTracksPanel.Children.Add(row.Panel);
+                        visibleTrackCount++;
+                    }
                 }
             }
         }
@@ -867,12 +1123,7 @@ public partial class MainWindow : Window
     private void ActivateScene(Scene scene)
     {
         var sceneSources = GetSceneSources(scene).ToList();
-        var musicSources = sceneSources
-            .Where(source => source.Layer.PlaybackBehavior == LayerPlaybackBehavior.Music)
-            .Select(source => source.Track)
-            .GroupBy(track => track.Id)
-            .Select(group => group.First())
-            .ToList();
+        var musicSources = GetMusicTracks(scene).ToList();
         var selectedMusic = musicSources.Count == 0 ? null : musicSources[Random.Shared.Next(musicSources.Count)];
         var ambienceSources = sceneSources
             .Where(source => source.Layer.PlaybackBehavior == LayerPlaybackBehavior.Ambience && source.Track.AutoPlayOnSceneActivation)
@@ -912,9 +1163,11 @@ public partial class MainWindow : Window
         scene.Layers.SelectMany(layer => layer.Playlists.SelectMany(playlist => playlist.Tracks.Select(track => (layer, track))));
 
     private IEnumerable<Track> GetMusicTracks(Scene scene) =>
-        GetSceneSources(scene)
-            .Where(source => source.Layer.PlaybackBehavior == LayerPlaybackBehavior.Music)
-            .Select(source => source.Track)
+        scene.Layers
+            .Where(layer => layer.PlaybackBehavior == LayerPlaybackBehavior.Music)
+            .SelectMany(layer => layer.Playlists
+                .Where(playlist => playlist.Id == layer.ActivePlaylistId)
+                .SelectMany(playlist => playlist.Tracks))
             .GroupBy(track => track.Id)
             .Select(group => group.First());
 
@@ -989,14 +1242,25 @@ public partial class MainWindow : Window
         if (layer is null)
             return;
 
-        var playlist = layer.Playlists.FirstOrDefault();
-        if (playlist is null)
-        {
-            playlist = new Playlist { Name = $"{layer.Name} Tracks" };
-            layer.Playlists.Add(playlist);
-        }
+        EnsureLayerHasPlaylist(layer);
+        var playlist = layer.Playlists.FirstOrDefault(candidate => candidate.Id == layer.ActivePlaylistId) ?? layer.Playlists[0];
 
         playlist.Tracks.Add(track);
+    }
+
+    private void AssignTrackToPlaylist(Track track, Guid playlistId)
+    {
+        var target = _project.Scenes.SelectMany(scene => scene.Layers)
+            .SelectMany(layer => layer.Playlists.Select(playlist => (layer, playlist)))
+            .FirstOrDefault(candidate => candidate.playlist.Id == playlistId);
+        if (target.playlist is null)
+            return;
+
+        foreach (var existingPlaylist in _project.Scenes.SelectMany(scene => scene.Layers).SelectMany(layer => layer.Playlists))
+            existingPlaylist.Tracks.RemoveAll(existing => existing.Id == track.Id);
+
+        track.LayerId = target.layer.Id;
+        target.playlist.Tracks.Add(track);
     }
 
     private static TimeSpan GetFadeInDuration(Scene? scene) =>
@@ -1005,16 +1269,18 @@ public partial class MainWindow : Window
     private static TimeSpan GetFadeOutDuration(Scene? scene) =>
         scene is { UseCrossfade: true } ? TimeSpan.FromSeconds(scene.FadeOutSeconds) : TimeSpan.Zero;
 
-    private sealed class TrackRow(StackPanel panel, TextBlock status, ProgressBar progress, Track track, ComboBox layerSelector, Button playPause)
+    private sealed class TrackRow(StackPanel panel, TextBlock status, ProgressBar progress, Track track, ComboBox layerSelector, ComboBox playlistSelector, Button playPause)
     {
         public StackPanel Panel { get; } = panel;
         public TextBlock Status { get; } = status;
         public ProgressBar Progress { get; } = progress;
         public Track Track { get; } = track;
         public ComboBox LayerSelector { get; } = layerSelector;
+        public ComboBox PlaylistSelector { get; } = playlistSelector;
         public Button PlayPause { get; } = playPause;
         public Guid? SessionId { get; set; }
     }
 
     private sealed record LayerChoice(Guid? LayerId, string Display);
+    private sealed record PlaylistChoice(Guid PlaylistId, string Display);
 }

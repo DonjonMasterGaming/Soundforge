@@ -11,6 +11,7 @@ public sealed class Layer
     public LayerPlaybackBehavior PlaybackBehavior { get; set; } = LayerPlaybackBehavior.Manual;
     public double Volume { get; set; } = 1.0;
     public bool IsMuted { get; set; }
+    public Guid? ActivePlaylistId { get; set; }
     public List<Playlist> Playlists { get; set; } = new();
 }
 
