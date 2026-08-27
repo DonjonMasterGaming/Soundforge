@@ -540,6 +540,15 @@ public partial class MainWindow : Window
             EnsureLayerHasPlaylist(layer);
             var name = new TextBox { Text = layer.Name, Height = 28, MinWidth = 180 };
             var remove = new Button { Content = "Remove", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(8, 0, 0, 0) };
+            var behavior = new ComboBox
+            {
+                ItemsSource = Enum.GetValues<LayerPlaybackBehavior>(),
+                SelectedItem = layer.PlaybackBehavior,
+                Width = 105,
+                Height = 28,
+                Margin = new Thickness(8, 0, 0, 0),
+                ToolTip = "Layer type"
+            };
             name.TextChanged += (_, _) => layer.Name = name.Text.Trim();
             name.LostFocus += (_, _) =>
             {
@@ -555,10 +564,24 @@ public partial class MainWindow : Window
                 RefreshTrackLayerSelectors();
                 RefreshTrackVisibility();
             };
+            behavior.SelectionChanged += (_, _) =>
+            {
+                if (behavior.SelectedItem is not LayerPlaybackBehavior selectedBehavior || selectedBehavior == layer.PlaybackBehavior)
+                    return;
+
+                layer.PlaybackBehavior = selectedBehavior;
+                foreach (var track in layer.Playlists.SelectMany(playlist => playlist.Tracks))
+                    ApplyLayerPlaybackDefaults(track);
+                RenderLayers();
+                RefreshTrackLayerSelectors();
+                RefreshTrackVisibility();
+            };
 
             var row = new DockPanel();
             DockPanel.SetDock(remove, Dock.Right);
+            DockPanel.SetDock(behavior, Dock.Right);
             row.Children.Add(remove);
+            row.Children.Add(behavior);
             row.Children.Add(name);
 
             var playlistPanel = new StackPanel { Margin = new Thickness(10, 8, 0, 0) };
@@ -737,7 +760,10 @@ public partial class MainWindow : Window
         foreach (var scene in project.Scenes)
         {
             foreach (var layer in scene.Layers)
+            {
+                InferCanonicalLayerBehavior(layer);
                 EnsureLayerHasPlaylist(layer);
+            }
 
             var validMusicPoolIds = scene.Layers
                 .Where(layer => layer.PlaybackBehavior == LayerPlaybackBehavior.Music)
@@ -751,6 +777,16 @@ public partial class MainWindow : Window
                 ambiencePool.AutoActivateWithMusicPlaylistIds.RemoveAll(id => !validMusicPoolIds.Contains(id));
             }
         }
+    }
+
+    private static void InferCanonicalLayerBehavior(Layer layer)
+    {
+        if (layer.Name.Equals("Music", StringComparison.OrdinalIgnoreCase))
+            layer.PlaybackBehavior = LayerPlaybackBehavior.Music;
+        else if (layer.Name.Equals("Ambience", StringComparison.OrdinalIgnoreCase))
+            layer.PlaybackBehavior = LayerPlaybackBehavior.Ambience;
+        else if (layer.Name.Equals("Effects", StringComparison.OrdinalIgnoreCase))
+            layer.PlaybackBehavior = LayerPlaybackBehavior.Effects;
     }
 
     private void ActivatePlaylistPool(Layer layer, Playlist playlist)
@@ -1160,7 +1196,8 @@ public partial class MainWindow : Window
                     {
                         Header = CreateLayerHeading(heading),
                         Content = section,
-                        IsExpanded = playlist.IsExpanded
+                        IsExpanded = playlist.IsExpanded,
+                        Foreground = new SolidColorBrush(Color.FromRgb(242, 242, 242))
                     };
                     expander.Expanded += (_, _) => playlist.IsExpanded = true;
                     expander.Collapsed += (_, _) => playlist.IsExpanded = false;
