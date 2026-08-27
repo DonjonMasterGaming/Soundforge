@@ -24,7 +24,7 @@
   </div>
   <p id="no-settings">This action needs no setup.</p>
   <script>
-    let socket, context, action;
+    let socket, context, action, settings = {};
     const scene = document.getElementById('scene-settings');
     const effect = document.getElementById('effect-settings');
     const none = document.getElementById('no-settings');
@@ -33,8 +33,9 @@
 
     window.connectElgatoStreamDeckSocket = (port, uuid, registerEvent, info, actionInfo) => {
       const details = JSON.parse(actionInfo);
-      context = details.context;
+      context = uuid;
       action = details.action;
+      settings = details.payload && details.payload.settings ? details.payload.settings : {};
       scene.style.display = action.endsWith('.scene') ? 'block' : 'none';
       effect.style.display = action.endsWith('.effect') ? 'block' : 'none';
       none.style.display = scene.style.display === 'none' && effect.style.display === 'none' ? 'block' : 'none';
@@ -46,12 +47,18 @@
       socket.onmessage = event => {
         const message = JSON.parse(event.data);
         if (message.event === 'didReceiveSettings') {
-          selectValue(sceneInput, message.payload.settings.sceneName || '');
-          selectValue(trackInput, message.payload.settings.trackName || '');
+          settings = message.payload.settings || {};
+          selectValue(sceneInput, settings.sceneName || '');
+          selectValue(trackInput, settings.trackName || '');
         }
         if (message.event === 'sendToPropertyInspector') {
           if (message.payload.type === 'getScenes') populate(sceneInput, message.payload.values || [], 'No scenes found');
           if (message.payload.type === 'getEffects') populate(trackInput, message.payload.values || [], 'No effects in active scene');
+          if (message.payload.type === 'savedSettings') {
+            settings = { sceneName: message.payload.sceneName || '', trackName: message.payload.trackName || '' };
+            selectValue(sceneInput, settings.sceneName);
+            selectValue(trackInput, settings.trackName);
+          }
         }
       };
     };
@@ -63,7 +70,7 @@
     }
 
     function populate(select, values, placeholder) {
-      const chosen = select.value;
+      const chosen = select === sceneInput ? (settings.sceneName || '') : (settings.trackName || '');
       select.innerHTML = '';
       const empty = document.createElement('option');
       empty.value = '';
@@ -84,10 +91,12 @@
 
     function save() {
       if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      settings = { sceneName: sceneInput.value.trim(), trackName: trackInput.value.trim() };
       socket.send(JSON.stringify({
-        event: 'setSettings',
+        event: 'sendToPlugin',
+        action,
         context,
-        payload: { sceneName: sceneInput.value.trim(), trackName: trackInput.value.trim() }
+        payload: { command: 'saveSettings', ...settings }
       }));
     }
     sceneInput.addEventListener('change', save);

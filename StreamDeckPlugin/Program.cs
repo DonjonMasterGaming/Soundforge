@@ -18,6 +18,10 @@ var registerEvent = GetArgument("-registerEvent");
 if (string.IsNullOrWhiteSpace(port) || string.IsNullOrWhiteSpace(pluginUuid) || string.IsNullOrWhiteSpace(registerEvent))
     return;
 
+var settingsDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Soundforge");
+var settingsPath = Path.Combine(settingsDirectory, "streamdeck-actions.json");
+var storedSettings = LoadStoredSettings();
+
 using var socket = new ClientWebSocket();
 await socket.ConnectAsync(new Uri($"ws://127.0.0.1:{port}"), CancellationToken.None);
 await SendSocketAsync(new { @event = registerEvent, uuid = pluginUuid });
@@ -38,7 +42,32 @@ while (socket.State == WebSocketState.Open)
         var eventName = eventElement.GetString();
         if (eventName == "sendToPlugin")
         {
-            await SendChoicesToPropertyInspectorAsync(root);
+            await HandlePropertyInspectorMessageAsync(root);
+            continue;
+        }
+
+        if (eventName == "propertyInspectorDidAppear")
+        {
+            var inspectorAction = root.GetProperty("action").GetString() ?? string.Empty;
+            var inspectorContext = root.GetProperty("context").GetString() ?? string.Empty;
+            await SendChoicesForActionAsync(inspectorAction, inspectorContext);
+            await SendStoredSettingsToPropertyInspectorAsync(inspectorContext);
+            await SetActionTitleAsync(inspectorAction, inspectorContext);
+            continue;
+        }
+
+        if (eventName == "didReceiveSettings")
+        {
+            RememberReceivedSettings(root);
+            await UpdateActionTitleAsync(root);
+            continue;
+        }
+
+        if (eventName == "willAppear")
+        {
+            var appearingAction = root.GetProperty("action").GetString() ?? string.Empty;
+            var appearingContext = root.GetProperty("context").GetString() ?? string.Empty;
+            await SetActionTitleAsync(appearingAction, appearingContext);
             continue;
         }
 
@@ -70,9 +99,18 @@ while (socket.State == WebSocketState.Open)
         {
             await SendSocketAsync(new
             {
-                @event = "setTitle",
+                @event = "showAlert",
+                context
+            });
+        }
+        else if (action == AmbienceAction && eventName == "keyDown")
+        {
+            var isOn = result.Message.StartsWith("Started", StringComparison.OrdinalIgnoreCase);
+            await SendSocketAsync(new
+            {
+                @event = "setState",
                 context,
-                payload = new { title = "SOUNDFORGE\nOFFLINE", target = 0 }
+                payload = new { state = isOn ? 0 : 1 }
             });
         }
     }
@@ -91,6 +129,60 @@ string GetDialTitle(string action) => action switch
     _ => "SOUNDFORGE"
 };
 
+async Task UpdateActionTitleAsync(JsonElement root)
+{
+    var action = root.GetProperty("action").GetString() ?? string.Empty;
+    var context = root.GetProperty("context").GetString() ?? string.Empty;
+    var configuredName = action switch
+    {
+        SceneAction => GetSetting(root, "sceneName") ?? GetStoredSetting(context)?.SceneName,
+        EffectAction => GetSetting(root, "trackName") ?? GetStoredSetting(context)?.TrackName,
+        _ => null
+    };
+
+    if (string.IsNullOrWhiteSpace(configuredName))
+        return;
+
+    await SendSocketAsync(new
+    {
+        @event = "setTitle",
+        context,
+        payload = new { title = configuredName, target = 0 }
+    });
+}
+
+async Task SetActionTitleAsync(string action, string context)
+{
+    if (action == AmbienceAction)
+    {
+        await SendSocketAsync(new
+        {
+            @event = "setState",
+            context,
+            payload = new { state = 1 }
+        });
+    }
+
+    var saved = GetStoredSetting(context);
+    var title = action switch
+    {
+        SceneAction => string.IsNullOrWhiteSpace(saved?.SceneName) ? "SELECT\nSCENE" : saved.SceneName,
+        AmbienceAction => string.Empty,
+        EffectAction => string.IsNullOrWhiteSpace(saved?.TrackName) ? "SELECT\nEFFECT" : saved.TrackName,
+        StopAllAction => "STOP\nALL",
+        _ => null
+    };
+    if (title is null)
+        return;
+
+    await SendSocketAsync(new
+    {
+        @event = "setTitle",
+        context,
+        payload = new { title, target = 0 }
+    });
+}
+
 async Task SendChoicesToPropertyInspectorAsync(JsonElement root)
 {
     if (!root.TryGetProperty("context", out var contextElement)
@@ -98,7 +190,61 @@ async Task SendChoicesToPropertyInspectorAsync(JsonElement root)
         || !payload.TryGetProperty("command", out var commandElement))
         return;
 
-    var requestedChoices = commandElement.GetString();
+    await SendChoiceListToPropertyInspectorAsync(commandElement.GetString(), contextElement.GetString());
+}
+
+async Task HandlePropertyInspectorMessageAsync(JsonElement root)
+{
+    if (!root.TryGetProperty("context", out var contextElement)
+        || !root.TryGetProperty("payload", out var payload)
+        || !payload.TryGetProperty("command", out var commandElement))
+        return;
+
+    var command = commandElement.GetString();
+    var context = contextElement.GetString() ?? string.Empty;
+    if (command != "saveSettings")
+    {
+        await SendChoicesToPropertyInspectorAsync(root);
+        return;
+    }
+
+    var sceneName = GetPayloadValue(payload, "sceneName");
+    var trackName = GetPayloadValue(payload, "trackName");
+    storedSettings[context] = new StoredActionSettings(sceneName, trackName);
+    SaveStoredSettings();
+    await SendSocketAsync(new
+    {
+        @event = "setSettings",
+        context,
+        payload = new { sceneName, trackName }
+    });
+
+    var action = root.TryGetProperty("action", out var actionElement) ? actionElement.GetString() : null;
+    var title = action == SceneAction ? sceneName : action == EffectAction ? trackName : null;
+    if (!string.IsNullOrWhiteSpace(title))
+    {
+        await SendSocketAsync(new
+        {
+            @event = "setTitle",
+            context,
+            payload = new { title, target = 0 }
+        });
+    }
+}
+
+async Task SendStoredSettingsToPropertyInspectorAsync(string context)
+{
+    var saved = GetStoredSetting(context) ?? new StoredActionSettings(null, null);
+    await SendSocketAsync(new
+    {
+        @event = "sendToPropertyInspector",
+        context,
+        payload = new { type = "savedSettings", sceneName = saved.SceneName, trackName = saved.TrackName }
+    });
+}
+
+async Task SendChoiceListToPropertyInspectorAsync(string? requestedChoices, string? context)
+{
     var command = requestedChoices switch
     {
         "getScenes" => new SoundforgeCommand("listScenes", null, null, 0),
@@ -112,7 +258,7 @@ async Task SendChoicesToPropertyInspectorAsync(JsonElement root)
     await SendSocketAsync(new
     {
         @event = "sendToPropertyInspector",
-        context = contextElement.GetString(),
+        context,
         payload = new
         {
             type = requestedChoices,
@@ -122,14 +268,29 @@ async Task SendChoicesToPropertyInspectorAsync(JsonElement root)
     });
 }
 
+async Task SendChoicesForActionAsync(string action, string context)
+{
+    var requestedChoices = action switch
+    {
+        SceneAction => "getScenes",
+        EffectAction => "getEffects",
+        _ => null
+    };
+
+    if (requestedChoices is not null)
+        await SendChoiceListToPropertyInspectorAsync(requestedChoices, context);
+}
+
 SoundforgeCommand? BuildCommand(string action, JsonElement root, string eventName)
 {
     var ticks = 0;
     if (eventName == "dialRotate" && root.TryGetProperty("payload", out var payload) && payload.TryGetProperty("ticks", out var ticksElement))
         ticks = ticksElement.GetInt32();
 
-    var sceneName = GetSetting(root, "sceneName");
-    var trackName = GetSetting(root, "trackName");
+    var context = root.TryGetProperty("context", out var contextElement) ? contextElement.GetString() ?? string.Empty : string.Empty;
+    var saved = GetStoredSetting(context);
+    var sceneName = GetSetting(root, "sceneName") ?? saved?.SceneName;
+    var trackName = GetSetting(root, "trackName") ?? saved?.TrackName;
     return action switch
     {
         SceneAction => new SoundforgeCommand("activateScene", sceneName, null, 0),
@@ -152,6 +313,51 @@ string? GetSetting(JsonElement root, string name)
         return null;
 
     return value.GetString();
+}
+
+string? GetPayloadValue(JsonElement payload, string name)
+    => payload.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+        ? value.GetString()
+        : null;
+
+StoredActionSettings? GetStoredSetting(string context)
+    => storedSettings.TryGetValue(context, out var saved) ? saved : null;
+
+void RememberReceivedSettings(JsonElement root)
+{
+    if (!root.TryGetProperty("context", out var contextElement))
+        return;
+
+    var context = contextElement.GetString() ?? string.Empty;
+    var sceneName = GetSetting(root, "sceneName");
+    var trackName = GetSetting(root, "trackName");
+    if (string.IsNullOrWhiteSpace(sceneName) && string.IsNullOrWhiteSpace(trackName))
+        return;
+
+    storedSettings[context] = new StoredActionSettings(sceneName, trackName);
+    SaveStoredSettings();
+}
+
+Dictionary<string, StoredActionSettings> LoadStoredSettings()
+{
+    try
+    {
+        if (!File.Exists(settingsPath))
+            return new Dictionary<string, StoredActionSettings>();
+
+        return JsonSerializer.Deserialize<Dictionary<string, StoredActionSettings>>(File.ReadAllText(settingsPath))
+            ?? new Dictionary<string, StoredActionSettings>();
+    }
+    catch
+    {
+        return new Dictionary<string, StoredActionSettings>();
+    }
+}
+
+void SaveStoredSettings()
+{
+    Directory.CreateDirectory(settingsDirectory);
+    File.WriteAllText(settingsPath, JsonSerializer.Serialize(storedSettings));
 }
 
 async Task<SoundforgeResponse> SendToSoundforgeAsync(SoundforgeCommand command)
@@ -205,3 +411,4 @@ string? GetArgument(string name)
 
 sealed record SoundforgeCommand(string Action, string? SceneName, string? TrackName, int Ticks);
 sealed record SoundforgeResponse(bool Success, string Message, IReadOnlyList<string>? Values = null, double? Level = null);
+sealed record StoredActionSettings(string? SceneName, string? TrackName);

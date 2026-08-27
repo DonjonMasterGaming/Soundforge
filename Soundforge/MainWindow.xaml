@@ -1,8 +1,8 @@
 <Window x:Class="Soundforge.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Soundforge" Height="820" Width="1400"
-        MinHeight="600" MinWidth="800"
+        Title="Soundforge 0.7a" Height="820" Width="1400"
+        MinHeight="600" MinWidth="960"
         Background="#17181C" Foreground="#F2F2F2">
     <Window.Resources>
         <Style TargetType="{x:Type CheckBox}">
@@ -35,23 +35,30 @@
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="270"/>
+                <ColumnDefinition Width="330"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Background="#202228" CornerRadius="8" Padding="12" Margin="0,0,12,0">
-                <StackPanel>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Margin="0,0,5,0">
                     <TextBlock Text="SCENES" FontWeight="Bold" Margin="0,0,0,10"/>
                     <StackPanel x:Name="SceneButtonsPanel"/>
                     <Border Background="#2B3345" CornerRadius="4" Padding="8" Margin="0,12,0,6">
                         <StackPanel>
                             <TextBlock Text="EDIT MODE" FontWeight="Bold" Foreground="#9FD0FF"/>
-                            <CheckBox x:Name="EditModeCheckBox" Content="Keep the live scene playing while editing" FontWeight="SemiBold" Margin="0,4,0,0"/>
+                            <CheckBox x:Name="EditModeCheckBox" FontWeight="SemiBold" Margin="0,4,0,0">
+                                <TextBlock Text="Keep the live scene playing while editing" TextWrapping="Wrap"/>
+                            </CheckBox>
                         </StackPanel>
                     </Border>
                     <TextBlock Text="TRACK VIEW" FontWeight="Bold" Margin="0,6,0,4"/>
-                    <RadioButton x:Name="SceneViewRadio" GroupName="TrackViewMode" Content="SCENE VIEW — selected scene only" IsChecked="True" Checked="TrackViewMode_Changed" Margin="0,0,0,4"/>
-                    <RadioButton x:Name="GlobalViewRadio" GroupName="TrackViewMode" Content="GLOBAL VIEW — all active tracks" Checked="TrackViewMode_Changed" Margin="0,0,0,6"/>
+                    <RadioButton x:Name="SceneViewRadio" GroupName="TrackViewMode" IsChecked="True" Checked="TrackViewMode_Changed" Margin="0,0,0,4">
+                        <TextBlock Text="SCENE VIEW — selected scene only" TextWrapping="Wrap"/>
+                    </RadioButton>
+                    <RadioButton x:Name="GlobalViewRadio" GroupName="TrackViewMode" Checked="TrackViewMode_Changed" Margin="0,0,0,6">
+                        <TextBlock Text="GLOBAL VIEW — all project sources" TextWrapping="Wrap"/>
+                    </RadioButton>
                     <Button Content="▶ Activate Selected Scene" Padding="8" Click="ActivateSelectedScene_Click"/>
                     <Separator Margin="0,14"/>
                     <TextBox x:Name="NewSceneNameText" Height="28" Margin="0,0,0,6" ToolTip="New scene name"/>
@@ -67,6 +74,7 @@
                     <TextBlock Text="Fade out (seconds)" Margin="0,0,0,2"/>
                     <TextBox x:Name="FadeOutSecondsText" Height="28" LostFocus="TransitionDuration_LostFocus"/>
                 </StackPanel>
+                </ScrollViewer>
             </Border>
 
             <Grid Grid.Column="1">
@@ -90,7 +98,7 @@
                         <StackPanel>
                             <DockPanel>
                                 <TextBlock x:Name="SceneTracksHeader" Text="SCENE TRACKS" FontWeight="Bold" DockPanel.Dock="Left"/>
-                                <Button Content="＋ Load Audio File" Click="Load_Click" Padding="10,4" HorizontalAlignment="Right"/>
+                                <Button Content="＋ Import Audio Files" Click="Load_Click" Padding="10,4" HorizontalAlignment="Right"/>
                             </DockPanel>
                             <TextBlock x:Name="EmptyTracksText" Text="Load one or more audio files to begin mixing." Margin="0,10,0,2"/>
                             <StackPanel x:Name="ActiveTracksPanel"/>

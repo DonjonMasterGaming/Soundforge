@@ -2,6 +2,7 @@ using Microsoft.Win32;
 using NAudio.CoreAudioApi;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using System.Windows.Threading;
 using Soundforge.Audio;
 using Soundforge.Control;
@@ -65,31 +66,40 @@ public partial class MainWindow : Window
     {
         var dialog = new OpenFileDialog
         {
-            Filter = "Audio files|*.mp3;*.wav;*.aiff;*.aif;*.ogg|All files|*.*"
+            Filter = "Audio files|*.mp3;*.wav;*.aiff;*.aif;*.ogg|All files|*.*",
+            Multiselect = true,
+            Title = "Import audio sources"
         };
 
         if (dialog.ShowDialog() != true) return;
 
-        try
+        var failures = new List<string>();
+        foreach (var fileName in dialog.FileNames)
         {
-            var track = new Track
+            try
             {
-                Name = System.IO.Path.GetFileName(dialog.FileName),
-                FilePath = dialog.FileName,
-                Volume = 0.8,
-                LayerId = _selectedScene?.Layers.FirstOrDefault()?.Id
-            };
+                var track = new Track
+                {
+                    Name = System.IO.Path.GetFileName(fileName),
+                    FilePath = fileName,
+                    Volume = 0.8,
+                    LayerId = _selectedScene?.Layers.FirstOrDefault()?.Id
+                };
 
-            var targetLayer = GetLayer(track.LayerId);
-            track.Loop = targetLayer?.PlaybackBehavior == LayerPlaybackBehavior.Ambience;
-            track.AutoPlayOnSceneActivation = targetLayer?.PlaybackBehavior != LayerPlaybackBehavior.Effects;
-            AssignTrackToLayer(track, track.LayerId);
-            AddTrackRow(null, track);
+                var targetLayer = GetLayer(track.LayerId);
+                track.Loop = targetLayer?.PlaybackBehavior == LayerPlaybackBehavior.Ambience;
+                track.AutoPlayOnSceneActivation = targetLayer?.PlaybackBehavior != LayerPlaybackBehavior.Effects;
+                AssignTrackToLayer(track, track.LayerId);
+                AddTrackRow(null, track);
+            }
+            catch (Exception ex)
+            {
+                failures.Add($"{System.IO.Path.GetFileName(fileName)} — {ex.Message}");
+            }
         }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Unable to load audio: {ex.Message}", "Soundforge", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+
+        if (failures.Count > 0)
+            MessageBox.Show($"Some files could not be imported:\n\n{string.Join("\n", failures)}", "Soundforge", MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
     private void OutputDeviceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -645,18 +655,19 @@ public partial class MainWindow : Window
         var name = new TextBlock { Text = track.Name, FontWeight = FontWeights.SemiBold };
         var status = new TextBlock { Text = "▶ Playing", Margin = new Thickness(0, 3, 0, 0) };
         var progress = new ProgressBar { Height = 6, Minimum = 0, Maximum = 1, Margin = new Thickness(0, 8, 0, 0) };
-        var volume = new Slider { Minimum = 0, Maximum = 1, Value = track.Volume, Width = 170, Margin = new Thickness(8, 0, 0, 0) };
-        var autoPlay = new CheckBox { Content = "Auto play", IsChecked = track.AutoPlayOnSceneActivation, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+        var volume = new Slider { Minimum = 0, Maximum = 1, Value = track.Volume, Width = 130, Margin = new Thickness(6, 0, 0, 0) };
+        var autoPlay = new CheckBox { Content = "Auto play", IsChecked = track.AutoPlayOnSceneActivation, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
         var layerSelector = new ComboBox
         {
-            Width = 170,
-            Margin = new Thickness(8, 0, 0, 0),
+            Width = 155,
+            Margin = new Thickness(6, 0, 0, 0),
             DisplayMemberPath = nameof(LayerChoice.Display),
             SelectedValuePath = nameof(LayerChoice.LayerId)
         };
-        var playPause = new Button { Content = "⏸ Pause", Padding = new Thickness(10, 4, 10, 4) };
-        var stop = new Button { Content = "■ Stop", Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(8, 0, 0, 0) };
-        var removeFromScene = new Button { Content = "Remove from Scene", Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(8, 0, 0, 0) };
+        var playPause = new Button { Content = "⏸ Pause", Padding = new Thickness(8, 3, 8, 3) };
+        var stop = new Button { Content = "■ Stop", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(6, 0, 0, 0) };
+        var removeFromScene = new Button { Content = "Remove from Scene", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(6, 0, 0, 0) };
+        var deleteSource = new Button { Content = "Delete Source", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(6, 0, 0, 0), ToolTip = "Remove this source from the entire Soundforge project" };
 
         playPause.Click += (_, _) =>
         {
@@ -682,6 +693,7 @@ public partial class MainWindow : Window
         };
         stop.Click += (_, _) => StopTrack(track.Id);
         removeFromScene.Click += (_, _) => RemoveTrackFromSelectedScene(track);
+        deleteSource.Click += (_, _) => DeleteSourceFromProject(track);
         volume.ValueChanged += (_, args) =>
         {
             var activeSession = _audioEngine.GetSessions().FirstOrDefault(item => item.TrackId == track.Id);
@@ -705,10 +717,11 @@ public partial class MainWindow : Window
         controls.Children.Add(playPause);
         controls.Children.Add(stop);
         controls.Children.Add(removeFromScene);
-        controls.Children.Add(new TextBlock { Text = "Volume", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0) });
+        controls.Children.Add(deleteSource);
+        controls.Children.Add(new TextBlock { Text = "Volume", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) });
         controls.Children.Add(volume);
         controls.Children.Add(autoPlay);
-        controls.Children.Add(new TextBlock { Text = "Layer", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0) });
+        controls.Children.Add(new TextBlock { Text = "Layer", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) });
         controls.Children.Add(layerSelector);
 
         var panel = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
@@ -745,6 +758,28 @@ public partial class MainWindow : Window
         RefreshTrackVisibility();
     }
 
+    private void DeleteSourceFromProject(Track track)
+    {
+        var confirmation = MessageBox.Show(
+            $"Delete '{track.Name}' from this Soundforge project and every scene?\n\nThe original audio file on disk will not be deleted.",
+            "Delete Source",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (confirmation != MessageBoxResult.Yes)
+            return;
+
+        var session = _audioEngine.GetSessions().FirstOrDefault(item => item.TrackId == track.Id);
+        if (session is not null)
+            _audioEngine.Stop(session.SessionId, TimeSpan.Zero);
+
+        foreach (var playlist in _project.Scenes.SelectMany(scene => scene.Layers).SelectMany(layer => layer.Playlists))
+            playlist.Tracks.RemoveAll(existing => existing.Id == track.Id);
+
+        _trackRows.Remove(track.Id);
+        RefreshTrackLayerSelectors();
+        RefreshTrackVisibility();
+    }
+
     private void RefreshTrackLayerSelectors()
     {
         var layerChoices = GetLayerChoices();
@@ -767,16 +802,43 @@ public partial class MainWindow : Window
         if (SceneTracksHeader is null || EmptyTracksText is null)
             return;
 
-        var selectedLayerIds = _selectedScene?.Layers.Select(layer => layer.Id).ToHashSet() ?? new HashSet<Guid>();
         var isGlobalView = GlobalViewRadio.IsChecked == true;
+        ActiveTracksPanel.Children.Clear();
         var visibleTrackCount = 0;
+        var scenes = isGlobalView ? _project.Scenes : _selectedScene is null ? [] : [_selectedScene];
 
-        foreach (var trackRow in _trackRows.Values)
+        foreach (var scene in scenes)
         {
-            var isVisible = isGlobalView || (trackRow.Track.LayerId is Guid layerId && selectedLayerIds.Contains(layerId));
-            trackRow.Panel.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
-            if (isVisible)
-                visibleTrackCount++;
+            foreach (var layer in scene.Layers)
+            {
+                var rows = _trackRows.Values.Where(row => row.Track.LayerId == layer.Id).ToList();
+                if (rows.Count == 0)
+                    continue;
+
+                var heading = isGlobalView ? $"{scene.Name.ToUpperInvariant()}  /  {layer.Name.ToUpperInvariant()}" : layer.Name.ToUpperInvariant();
+                ActiveTracksPanel.Children.Add(CreateLayerHeading(heading));
+                foreach (var row in rows)
+                {
+                    row.Panel.Visibility = Visibility.Visible;
+                    ActiveTracksPanel.Children.Add(row.Panel);
+                    visibleTrackCount++;
+                }
+            }
+        }
+
+        if (isGlobalView)
+        {
+            var unassignedRows = _trackRows.Values.Where(row => row.Track.LayerId is null).ToList();
+            if (unassignedRows.Count > 0)
+            {
+                ActiveTracksPanel.Children.Add(CreateLayerHeading("UNASSIGNED SOURCES"));
+                foreach (var row in unassignedRows)
+                {
+                    row.Panel.Visibility = Visibility.Visible;
+                    ActiveTracksPanel.Children.Add(row.Panel);
+                    visibleTrackCount++;
+                }
+            }
         }
 
         SceneTracksHeader.Text = isGlobalView
@@ -787,6 +849,20 @@ public partial class MainWindow : Window
             : "No tracks are assigned to this scene.";
         EmptyTracksText.Visibility = visibleTrackCount == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
+
+    private static Border CreateLayerHeading(string heading) => new()
+    {
+        Background = new SolidColorBrush(Color.FromRgb(43, 51, 69)),
+        CornerRadius = new CornerRadius(4),
+        Margin = new Thickness(0, 12, 0, 2),
+        Padding = new Thickness(10, 6, 10, 6),
+        Child = new TextBlock
+        {
+            Text = heading,
+            FontWeight = FontWeights.Bold,
+            Foreground = new SolidColorBrush(Color.FromRgb(159, 208, 255))
+        }
+    };
 
     private void ActivateScene(Scene scene)
     {

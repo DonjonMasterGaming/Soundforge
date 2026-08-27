@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">
+  <rect width="144" height="144" rx="18" fill="#202228"/>
+  <path d="M30 61c9-13 18-13 27 0s18 13 27 0 18-13 30 0" fill="none" stroke="#7f8795" stroke-width="8" stroke-linecap="round"/>
+  <path d="M30 81c9-13 18-13 27 0s18 13 27 0 18-13 30 0" fill="none" stroke="#59616e" stroke-width="8" stroke-linecap="round"/>
+  <text x="72" y="112" fill="#ffffff" font-family="Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" text-anchor="middle">AMBIENCE</text>
+  <text x="72" y="132" fill="#aeb4bf" font-family="Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" text-anchor="middle">OFF</text>
+</svg>
