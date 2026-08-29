@@ -17,6 +17,13 @@
     <select id="sceneName"><option value="">Open Soundforge to load scenes…</option></select>
     <p>The list comes from the project currently open in Soundforge.</p>
   </div>
+  <div id="music-pool-settings" class="settings">
+    <label for="poolSceneName">Scene</label>
+    <select id="poolSceneName"><option value="">Open Soundforge to load scenes…</option></select>
+    <label for="poolName" style="margin-top: 14px;">Music pool</label>
+    <select id="poolName"><option value="">Select a scene first…</option></select>
+    <p>Choose a scene, then one of its Music pools. Activating it also follows any linked Ambience pools.</p>
+  </div>
   <div id="effect-settings" class="settings">
     <label for="trackName">Effect source name</label>
     <select id="trackName"><option value="">Activate a scene to load effects…</option></select>
@@ -26,9 +33,12 @@
   <script>
     let socket, context, action, settings = {};
     const scene = document.getElementById('scene-settings');
+    const musicPool = document.getElementById('music-pool-settings');
     const effect = document.getElementById('effect-settings');
     const none = document.getElementById('no-settings');
     const sceneInput = document.getElementById('sceneName');
+    const poolSceneInput = document.getElementById('poolSceneName');
+    const poolInput = document.getElementById('poolName');
     const trackInput = document.getElementById('trackName');
 
     window.connectElgatoStreamDeckSocket = (port, uuid, registerEvent, info, actionInfo) => {
@@ -37,8 +47,9 @@
       action = details.action;
       settings = details.payload && details.payload.settings ? details.payload.settings : {};
       scene.style.display = action.endsWith('.scene') ? 'block' : 'none';
+      musicPool.style.display = action.endsWith('.music-pool') ? 'block' : 'none';
       effect.style.display = action.endsWith('.effect') ? 'block' : 'none';
-      none.style.display = scene.style.display === 'none' && effect.style.display === 'none' ? 'block' : 'none';
+      none.style.display = scene.style.display === 'none' && musicPool.style.display === 'none' && effect.style.display === 'none' ? 'block' : 'none';
       socket = new WebSocket(`ws://127.0.0.1:${port}`);
       socket.onopen = () => {
         socket.send(JSON.stringify({ event: registerEvent, uuid }));
@@ -49,15 +60,29 @@
         if (message.event === 'didReceiveSettings') {
           settings = message.payload.settings || {};
           selectValue(sceneInput, settings.sceneName || '');
+          selectValue(poolSceneInput, settings.sceneName || '');
+          selectValue(poolInput, settings.poolName || '');
           selectValue(trackInput, settings.trackName || '');
         }
         if (message.event === 'sendToPropertyInspector') {
-          if (message.payload.type === 'getScenes') populate(sceneInput, message.payload.values || [], 'No scenes found');
+          if (message.payload.type === 'getScenes') {
+            const target = action.endsWith('.music-pool') ? poolSceneInput : sceneInput;
+            populate(target, message.payload.values || [], 'No scenes found');
+            if (action.endsWith('.music-pool')) requestMusicPools();
+          }
+          if (message.payload.type === 'getMusicPools') populate(poolInput, message.payload.values || [], 'No Music pools found');
           if (message.payload.type === 'getEffects') populate(trackInput, message.payload.values || [], 'No effects in active scene');
           if (message.payload.type === 'savedSettings') {
-            settings = { sceneName: message.payload.sceneName || '', trackName: message.payload.trackName || '' };
+            settings = {
+              sceneName: message.payload.sceneName || '',
+              trackName: message.payload.trackName || '',
+              poolName: message.payload.poolName || ''
+            };
             selectValue(sceneInput, settings.sceneName);
+            selectValue(poolSceneInput, settings.sceneName);
+            selectValue(poolInput, settings.poolName);
             selectValue(trackInput, settings.trackName);
+            if (action.endsWith('.music-pool')) requestMusicPools();
           }
         }
       };
@@ -65,12 +90,31 @@
 
     function loadChoices() {
       if (!socket || socket.readyState !== WebSocket.OPEN || !action) return;
-      const command = action.endsWith('.scene') ? 'getScenes' : action.endsWith('.effect') ? 'getEffects' : null;
+      const command = action.endsWith('.scene') || action.endsWith('.music-pool')
+        ? 'getScenes'
+        : action.endsWith('.effect') ? 'getEffects' : null;
       if (command) socket.send(JSON.stringify({ event: 'sendToPlugin', action, context, payload: { command } }));
     }
 
+    function requestMusicPools() {
+      if (!socket || socket.readyState !== WebSocket.OPEN || !action || !action.endsWith('.music-pool')) return;
+      const sceneName = poolSceneInput.value.trim();
+      if (!sceneName) {
+        populate(poolInput, [], 'Select a scene first…');
+        return;
+      }
+      socket.send(JSON.stringify({
+        event: 'sendToPlugin',
+        action,
+        context,
+        payload: { command: 'getMusicPools', sceneName }
+      }));
+    }
+
     function populate(select, values, placeholder) {
-      const chosen = select === sceneInput ? (settings.sceneName || '') : (settings.trackName || '');
+      const chosen = select === sceneInput || select === poolSceneInput
+        ? (settings.sceneName || '')
+        : select === poolInput ? (settings.poolName || '') : (settings.trackName || '');
       select.innerHTML = '';
       const empty = document.createElement('option');
       empty.value = '';
@@ -91,7 +135,9 @@
 
     function save() {
       if (!socket || socket.readyState !== WebSocket.OPEN) return;
-      settings = { sceneName: sceneInput.value.trim(), trackName: trackInput.value.trim() };
+      settings = action && action.endsWith('.music-pool')
+        ? { sceneName: poolSceneInput.value.trim(), trackName: '', poolName: poolInput.value.trim() }
+        : { sceneName: sceneInput.value.trim(), trackName: trackInput.value.trim(), poolName: '' };
       socket.send(JSON.stringify({
         event: 'sendToPlugin',
         action,
@@ -100,6 +146,13 @@
       }));
     }
     sceneInput.addEventListener('change', save);
+    poolSceneInput.addEventListener('change', () => {
+      settings.sceneName = poolSceneInput.value.trim();
+      settings.poolName = '';
+      save();
+      requestMusicPools();
+    });
+    poolInput.addEventListener('change', save);
     trackInput.addEventListener('change', save);
   </script>
 </body>

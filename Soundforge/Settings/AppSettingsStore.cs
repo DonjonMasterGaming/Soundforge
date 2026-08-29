@@ -6,6 +6,10 @@ namespace Soundforge.Settings;
 public sealed class AppSettings
 {
     public string? OutputDeviceId { get; set; }
+    public bool AutosaveEnabled { get; set; } = true;
+    public int AutosaveIntervalMinutes { get; set; } = 2;
+    public string? AutosaveFolder { get; set; }
+    public bool LastShutdownClean { get; set; } = true;
 }
 
 /// <summary>

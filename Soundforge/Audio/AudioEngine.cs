@@ -1,3 +1,4 @@
+using System.Runtime;
 using Soundforge.Models;
 
 namespace Soundforge.Audio;
@@ -11,6 +12,7 @@ public sealed class AudioEngine : IDisposable
 {
     private readonly object _sync = new();
     private readonly Dictionary<Guid, ActiveSession> _sessions = new();
+    private readonly GCLatencyMode _normalGcLatencyMode = GCSettings.LatencyMode;
     private float _masterVolume = 1f;
     private string? _outputDeviceId;
     private bool _disposed;
@@ -73,21 +75,26 @@ public sealed class AudioEngine : IDisposable
 
         try
         {
-            player.Load(track.FilePath, track.Loop, outputDeviceId);
+            var trimStart = TimeSpan.FromSeconds(Math.Max(0, track.TrimStartSeconds));
+            var trimEnd = track.TrimEndSeconds is > 0
+                ? TimeSpan.FromSeconds(track.TrimEndSeconds.Value)
+                : (TimeSpan?)null;
+            player.Load(track.FilePath, track.Loop, outputDeviceId, trimStart, trimEnd);
 
             lock (_sync)
             {
                 ThrowIfDisposed();
                 var session = new ActiveSession(sessionId, track, player);
+                session.FadeGain = fadeIn is { } duration && duration > TimeSpan.Zero ? 0f : 1f;
+                if (_sessions.Count == 0)
+                    GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
                 _sessions.Add(sessionId, session);
                 ApplyVolume(session);
-                if (fadeIn is { } duration && duration > TimeSpan.Zero)
-                    player.Volume = 0f;
             }
 
             player.Play();
             if (fadeIn is { } fadeDuration && fadeDuration > TimeSpan.Zero)
-                StartFade(sessionId, 0f, fadeDuration);
+                StartFade(sessionId, 1f, fadeDuration);
             return sessionId;
         }
         catch
@@ -143,6 +150,8 @@ public sealed class AudioEngine : IDisposable
         {
             if (!_sessions.Remove(sessionId, out session))
                 return false;
+            if (_sessions.Count == 0)
+                GCSettings.LatencyMode = _normalGcLatencyMode;
         }
 
         session.Player.Dispose();
@@ -156,6 +165,7 @@ public sealed class AudioEngine : IDisposable
         {
             sessions = _sessions.Values.ToArray();
             _sessions.Clear();
+            GCSettings.LatencyMode = _normalGcLatencyMode;
         }
 
         foreach (var session in sessions)
@@ -173,6 +183,7 @@ public sealed class AudioEngine : IDisposable
                     session.Track.Name,
                     session.Track.FilePath,
                     session.Player.IsPlaying,
+                    session.Player.HasReachedEnd,
                     session.Player.Position,
                     session.Player.Length,
                     session.Player.Volume))
@@ -202,27 +213,30 @@ public sealed class AudioEngine : IDisposable
     }
 
     private void ApplyVolume(ActiveSession session) =>
-        session.Player.Volume = (float)Math.Clamp(session.Track.Volume * session.LayerGain * _masterVolume, 0d, 1d);
+        session.Player.Volume = (float)Math.Clamp(
+            session.Track.Volume * session.LayerGain * _masterVolume * session.FadeGain,
+            0d,
+            1d);
 
-    private void StartFade(Guid sessionId, float targetVolume, TimeSpan duration, bool stopAfterFade = false)
+    private void StartFade(Guid sessionId, float targetFadeGain, TimeSpan duration, bool stopAfterFade = false)
     {
         ActiveSession? session;
         int fadeVersion;
-        float startingVolume;
+        float startingFadeGain;
 
         lock (_sync)
         {
             if (!_sessions.TryGetValue(sessionId, out session))
                 return;
 
-            startingVolume = session.Player.Volume;
+            startingFadeGain = session.FadeGain;
             fadeVersion = ++session.FadeVersion;
         }
 
-        _ = FadeAsync(sessionId, startingVolume, targetVolume, duration, fadeVersion, stopAfterFade);
+        _ = FadeAsync(sessionId, startingFadeGain, targetFadeGain, duration, fadeVersion, stopAfterFade);
     }
 
-    private async Task FadeAsync(Guid sessionId, float startingVolume, float requestedTargetVolume, TimeSpan duration, int fadeVersion, bool stopAfterFade)
+    private async Task FadeAsync(Guid sessionId, float startingFadeGain, float targetFadeGain, TimeSpan duration, int fadeVersion, bool stopAfterFade)
     {
         var startedAt = DateTime.UtcNow;
         while (true)
@@ -235,10 +249,8 @@ public sealed class AudioEngine : IDisposable
                 if (!_sessions.TryGetValue(sessionId, out var session) || session.FadeVersion != fadeVersion)
                     return;
 
-                var targetVolume = stopAfterFade
-                    ? requestedTargetVolume
-                    : (float)Math.Clamp(session.Track.Volume * session.LayerGain * _masterVolume, 0d, 1d);
-                session.Player.Volume = startingVolume + ((targetVolume - startingVolume) * (float)progress);
+                session.FadeGain = startingFadeGain + ((targetFadeGain - startingFadeGain) * (float)progress);
+                ApplyVolume(session);
             }
 
             if (isComplete)
@@ -263,6 +275,7 @@ public sealed class AudioEngine : IDisposable
         public AudioTrackPlayer Player { get; } = player;
         public int FadeVersion { get; set; }
         public float LayerGain { get; set; } = 1f;
+        public float FadeGain { get; set; } = 1f;
     }
 }
 
@@ -272,6 +285,7 @@ public sealed record PlaybackSessionInfo(
     string TrackName,
     string FilePath,
     bool IsPlaying,
+    bool HasReachedEnd,
     TimeSpan Position,
     TimeSpan Length,
     float EffectiveVolume);

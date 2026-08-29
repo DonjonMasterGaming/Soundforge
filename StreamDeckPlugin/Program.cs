@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 
 const string SceneAction = "com.soundforge.control.scene";
+const string MusicPoolAction = "com.soundforge.control.music-pool";
 const string AmbienceAction = "com.soundforge.control.ambience";
 const string EffectAction = "com.soundforge.control.effect";
 const string StopAllAction = "com.soundforge.control.stop-all";
@@ -136,6 +137,7 @@ async Task UpdateActionTitleAsync(JsonElement root)
     var configuredName = action switch
     {
         SceneAction => GetSetting(root, "sceneName") ?? GetStoredSetting(context)?.SceneName,
+        MusicPoolAction => GetSetting(root, "poolName") ?? GetStoredSetting(context)?.PoolName,
         EffectAction => GetSetting(root, "trackName") ?? GetStoredSetting(context)?.TrackName,
         _ => null
     };
@@ -167,6 +169,7 @@ async Task SetActionTitleAsync(string action, string context)
     var title = action switch
     {
         SceneAction => string.IsNullOrWhiteSpace(saved?.SceneName) ? "SELECT\nSCENE" : saved.SceneName,
+        MusicPoolAction => string.IsNullOrWhiteSpace(saved?.PoolName) ? "SELECT\nMUSIC POOL" : saved.PoolName,
         AmbienceAction => string.Empty,
         EffectAction => string.IsNullOrWhiteSpace(saved?.TrackName) ? "SELECT\nEFFECT" : saved.TrackName,
         StopAllAction => "STOP\nALL",
@@ -190,7 +193,8 @@ async Task SendChoicesToPropertyInspectorAsync(JsonElement root)
         || !payload.TryGetProperty("command", out var commandElement))
         return;
 
-    await SendChoiceListToPropertyInspectorAsync(commandElement.GetString(), contextElement.GetString());
+    var sceneName = GetPayloadValue(payload, "sceneName");
+    await SendChoiceListToPropertyInspectorAsync(commandElement.GetString(), contextElement.GetString(), sceneName);
 }
 
 async Task HandlePropertyInspectorMessageAsync(JsonElement root)
@@ -210,17 +214,18 @@ async Task HandlePropertyInspectorMessageAsync(JsonElement root)
 
     var sceneName = GetPayloadValue(payload, "sceneName");
     var trackName = GetPayloadValue(payload, "trackName");
-    storedSettings[context] = new StoredActionSettings(sceneName, trackName);
+    var poolName = GetPayloadValue(payload, "poolName");
+    storedSettings[context] = new StoredActionSettings(sceneName, trackName, poolName);
     SaveStoredSettings();
     await SendSocketAsync(new
     {
         @event = "setSettings",
         context,
-        payload = new { sceneName, trackName }
+        payload = new { sceneName, trackName, poolName }
     });
 
     var action = root.TryGetProperty("action", out var actionElement) ? actionElement.GetString() : null;
-    var title = action == SceneAction ? sceneName : action == EffectAction ? trackName : null;
+    var title = action == SceneAction ? sceneName : action == MusicPoolAction ? poolName : action == EffectAction ? trackName : null;
     if (!string.IsNullOrWhiteSpace(title))
     {
         await SendSocketAsync(new
@@ -234,21 +239,22 @@ async Task HandlePropertyInspectorMessageAsync(JsonElement root)
 
 async Task SendStoredSettingsToPropertyInspectorAsync(string context)
 {
-    var saved = GetStoredSetting(context) ?? new StoredActionSettings(null, null);
+    var saved = GetStoredSetting(context) ?? new StoredActionSettings(null, null, null);
     await SendSocketAsync(new
     {
         @event = "sendToPropertyInspector",
         context,
-        payload = new { type = "savedSettings", sceneName = saved.SceneName, trackName = saved.TrackName }
+        payload = new { type = "savedSettings", sceneName = saved.SceneName, trackName = saved.TrackName, poolName = saved.PoolName }
     });
 }
 
-async Task SendChoiceListToPropertyInspectorAsync(string? requestedChoices, string? context)
+async Task SendChoiceListToPropertyInspectorAsync(string? requestedChoices, string? context, string? sceneName = null)
 {
     var command = requestedChoices switch
     {
-        "getScenes" => new SoundforgeCommand("listScenes", null, null, 0),
-        "getEffects" => new SoundforgeCommand("listEffects", null, null, 0),
+        "getScenes" => new SoundforgeCommand("listScenes", null, null, null, 0),
+        "getMusicPools" => new SoundforgeCommand("listMusicPools", sceneName, null, null, 0),
+        "getEffects" => new SoundforgeCommand("listEffects", null, null, null, 0),
         _ => null
     };
     if (command is null)
@@ -273,6 +279,7 @@ async Task SendChoicesForActionAsync(string action, string context)
     var requestedChoices = action switch
     {
         SceneAction => "getScenes",
+        MusicPoolAction => "getScenes",
         EffectAction => "getEffects",
         _ => null
     };
@@ -291,16 +298,18 @@ SoundforgeCommand? BuildCommand(string action, JsonElement root, string eventNam
     var saved = GetStoredSetting(context);
     var sceneName = GetSetting(root, "sceneName") ?? saved?.SceneName;
     var trackName = GetSetting(root, "trackName") ?? saved?.TrackName;
+    var poolName = GetSetting(root, "poolName") ?? saved?.PoolName;
     return action switch
     {
-        SceneAction => new SoundforgeCommand("activateScene", sceneName, null, 0),
-        AmbienceAction => new SoundforgeCommand("toggleAmbience", null, null, 0),
-        EffectAction => new SoundforgeCommand("triggerEffect", null, trackName, 0),
-        StopAllAction => new SoundforgeCommand("stopAll", null, null, 0),
-        MasterAction => new SoundforgeCommand("adjustMaster", null, null, ticks),
-        MusicAction => new SoundforgeCommand("adjustMusic", null, null, ticks),
-        AmbienceVolumeAction => new SoundforgeCommand("adjustAmbience", null, null, ticks),
-        EffectsAction => new SoundforgeCommand("adjustEffects", null, null, ticks),
+        SceneAction => new SoundforgeCommand("activateScene", sceneName, null, null, 0),
+        MusicPoolAction => new SoundforgeCommand("activateMusicPool", sceneName, null, poolName, 0),
+        AmbienceAction => new SoundforgeCommand("toggleAmbience", null, null, null, 0),
+        EffectAction => new SoundforgeCommand("triggerEffect", null, trackName, null, 0),
+        StopAllAction => new SoundforgeCommand("stopAll", null, null, null, 0),
+        MasterAction => new SoundforgeCommand("adjustMaster", null, null, null, ticks),
+        MusicAction => new SoundforgeCommand("adjustMusic", null, null, null, ticks),
+        AmbienceVolumeAction => new SoundforgeCommand("adjustAmbience", null, null, null, ticks),
+        EffectsAction => new SoundforgeCommand("adjustEffects", null, null, null, ticks),
         _ => null
     };
 }
@@ -331,10 +340,11 @@ void RememberReceivedSettings(JsonElement root)
     var context = contextElement.GetString() ?? string.Empty;
     var sceneName = GetSetting(root, "sceneName");
     var trackName = GetSetting(root, "trackName");
-    if (string.IsNullOrWhiteSpace(sceneName) && string.IsNullOrWhiteSpace(trackName))
+    var poolName = GetSetting(root, "poolName");
+    if (string.IsNullOrWhiteSpace(sceneName) && string.IsNullOrWhiteSpace(trackName) && string.IsNullOrWhiteSpace(poolName))
         return;
 
-    storedSettings[context] = new StoredActionSettings(sceneName, trackName);
+    storedSettings[context] = new StoredActionSettings(sceneName, trackName, poolName);
     SaveStoredSettings();
 }
 
@@ -409,6 +419,6 @@ string? GetArgument(string name)
     return index >= 0 && index < args.Length - 1 ? args[index + 1] : null;
 }
 
-sealed record SoundforgeCommand(string Action, string? SceneName, string? TrackName, int Ticks);
+sealed record SoundforgeCommand(string Action, string? SceneName, string? TrackName, string? PoolName, int Ticks);
 sealed record SoundforgeResponse(bool Success, string Message, IReadOnlyList<string>? Values = null, double? Level = null);
-sealed record StoredActionSettings(string? SceneName, string? TrackName);
+sealed record StoredActionSettings(string? SceneName, string? TrackName, string? PoolName);

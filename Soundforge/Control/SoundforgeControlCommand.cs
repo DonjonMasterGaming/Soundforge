@@ -10,6 +10,7 @@ public sealed class SoundforgeControlCommand
     public string Action { get; set; } = string.Empty;
     public string? SceneName { get; set; }
     public string? TrackName { get; set; }
+    public string? PoolName { get; set; }
     public int Ticks { get; set; }
 }
 

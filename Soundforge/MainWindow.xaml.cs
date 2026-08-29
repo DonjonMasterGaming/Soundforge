@@ -1,5 +1,6 @@
 using Microsoft.Win32;
 using NAudio.CoreAudioApi;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -17,7 +18,9 @@ public partial class MainWindow : Window
     private readonly AudioEngine _audioEngine = new();
     private readonly AudioDeviceManager _devices = new();
     private readonly DispatcherTimer _timer;
+    private readonly DispatcherTimer _autosaveTimer;
     private readonly Dictionary<Guid, TrackRow> _trackRows = new();
+    private readonly Dictionary<Guid, PlaylistHeadingState> _playlistHeadings = new();
     private SoundforgeProject _project = new();
     private readonly AppSettingsStore _settingsStore = new();
     private readonly AppSettings _settings;
@@ -26,21 +29,33 @@ public partial class MainWindow : Window
     private Scene? _activeScene;
     private bool _muted;
     private bool _refreshingTrackSelectors;
+    private bool _autosaveInProgress;
+    private readonly bool _previousSessionEndedClean;
 
     public MainWindow()
     {
         InitializeComponent();
         _settings = _settingsStore.Load();
+        _previousSessionEndedClean = _settings.LastShutdownClean;
+        _settings.LastShutdownClean = false;
+        _settingsStore.Save(_settings);
         _audioEngine.MasterVolume = (float)MasterSlider.Value;
         _controlServer = new LocalControlServer(command => Dispatcher.InvokeAsync(() => HandleControlCommand(command)).Task);
         _controlServer.Start();
-        Closing += (_, _) => _controlServer.Dispose();
-        Loaded += async (_, _) => await RefreshDevicesAsync();
+        Loaded += async (_, _) =>
+        {
+            await RefreshDevicesAsync();
+            TryRecoverAutosave();
+            ConfigureAutosaveTimer();
+        };
         AddScene("Demo");
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _timer.Tick += (_, _) => UpdateProgress();
         _timer.Start();
+
+        _autosaveTimer = new DispatcherTimer();
+        _autosaveTimer.Tick += async (_, _) => await RunAutosaveAsync();
     }
 
     private async Task RefreshDevicesAsync()
@@ -139,6 +154,7 @@ public partial class MainWindow : Window
             return command.Action switch
             {
                 "activateScene" => ActivateSceneFromControl(command.SceneName),
+                "activateMusicPool" => ActivateMusicPoolFromControl(command.SceneName, command.PoolName),
                 "toggleAmbience" => ToggleLayerFromControl(LayerPlaybackBehavior.Ambience),
                 "triggerEffect" => TriggerEffectFromControl(command.TrackName),
                 "stopAll" => StopAllFromControl(),
@@ -147,6 +163,7 @@ public partial class MainWindow : Window
                 "adjustAmbience" => AdjustLayerFromControl(LayerPlaybackBehavior.Ambience, command.Ticks),
                 "adjustEffects" => AdjustLayerFromControl(LayerPlaybackBehavior.Effects, command.Ticks),
                 "listScenes" => new SoundforgeControlResult(true, "Scenes loaded.", _project.Scenes.Select(scene => scene.Name).Order().ToList()),
+                "listMusicPools" => ListMusicPoolsFromControl(command.SceneName),
                 "listEffects" => new SoundforgeControlResult(
                     true,
                     _activeScene is null ? "Activate a scene to list its effects." : "Effects loaded.",
@@ -177,6 +194,44 @@ public partial class MainWindow : Window
         SelectScene(scene, activate: false);
         ActivateScene(scene);
         return new SoundforgeControlResult(true, $"Activated {scene.Name}.");
+    }
+
+    private SoundforgeControlResult ListMusicPoolsFromControl(string? sceneName)
+    {
+        var scene = _project.Scenes.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, sceneName?.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (scene is null)
+            return new SoundforgeControlResult(false, "Choose a valid scene before loading its Music pools.");
+
+        var pools = scene.Layers
+            .Where(layer => layer.PlaybackBehavior == LayerPlaybackBehavior.Music)
+            .SelectMany(layer => layer.Playlists)
+            .Select(playlist => playlist.Name)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return new SoundforgeControlResult(true, "Music pools loaded.", pools);
+    }
+
+    private SoundforgeControlResult ActivateMusicPoolFromControl(string? sceneName, string? poolName)
+    {
+        var scene = _project.Scenes.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, sceneName?.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (scene is null)
+            return new SoundforgeControlResult(false, "That scene does not exist in the open project.");
+
+        var target = scene.Layers
+            .Where(layer => layer.PlaybackBehavior == LayerPlaybackBehavior.Music)
+            .SelectMany(layer => layer.Playlists.Select(playlist => (layer, playlist)))
+            .FirstOrDefault(candidate => string.Equals(candidate.playlist.Name, poolName?.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (target.playlist is null)
+            return new SoundforgeControlResult(false, "That Music pool does not exist in the selected scene.");
+
+        var sceneWasActive = _activeScene == scene;
+        SelectScene(scene, activate: false);
+        ActivatePlaylistPool(target.layer, target.playlist);
+        if (!sceneWasActive)
+            ActivateScene(scene);
+        return new SoundforgeControlResult(true, $"Activated {scene.Name} / {target.playlist.Name}.");
     }
 
     private SoundforgeControlResult ToggleLayerFromControl(LayerPlaybackBehavior behavior)
@@ -268,7 +323,7 @@ public partial class MainWindow : Window
         EmptyTracksText.Visibility = Visibility.Collapsed;
     }
 
-    private void SaveProject_Click(object sender, RoutedEventArgs e)
+    private async void SaveProject_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new SaveFileDialog
         {
@@ -280,18 +335,42 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog() != true)
             return;
 
+        var progressWindow = CreateProjectProgressWindow("Saving Soundforge project");
         try
         {
             _project.MasterVolume = MasterSlider.Value;
-            SoundforgeProjectStore.Save(dialog.FileName, _project);
+            var progress = new Progress<ProjectStoreProgress>(progressWindow.ShowProgress);
+            await Task.Run(() => SoundforgeProjectStore.Save(dialog.FileName, _project, progress));
         }
         catch (Exception ex)
         {
             MessageBox.Show($"Unable to save project: {ex.Message}", "Soundforge", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+        finally
+        {
+            CloseProjectProgressWindow(progressWindow);
+        }
     }
 
-    private void OpenProject_Click(object sender, RoutedEventArgs e)
+    private void AutosaveSettings_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new AutosaveSettingsWindow(_settings, GetDefaultAutosaveFolder()) { Owner = this };
+        if (window.ShowDialog() != true)
+            return;
+
+        _settings.AutosaveEnabled = window.AutosaveEnabled;
+        _settings.AutosaveIntervalMinutes = window.AutosaveIntervalMinutes;
+        _settings.AutosaveFolder = window.AutosaveFolder;
+        _settingsStore.Save(_settings);
+        ConfigureAutosaveTimer();
+
+        if (_settings.AutosaveEnabled)
+            _ = RunAutosaveAsync();
+        else
+            AutosaveStatusText.Text = "Autosave: Off";
+    }
+
+    private async void OpenProject_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog
         {
@@ -302,48 +381,181 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog() != true)
             return;
 
+        var progressWindow = CreateProjectProgressWindow("Loading Soundforge project");
+        _audioEngine.StopAll();
         try
         {
-            var loadedProject = SoundforgeProjectStore.Load(dialog.FileName);
-            _audioEngine.StopAll();
-            _trackRows.Clear();
-            ActiveTracksPanel.Children.Clear();
-            _project = loadedProject;
-            NormalizePlaylistPools(_project);
-            _activeScene = null;
-            _selectedScene = null;
-            _muted = false;
-            MasterSlider.Value = _project.MasterVolume;
-
-            var savedOutputDevice = (OutputDeviceCombo.ItemsSource as IEnumerable<AudioDeviceInfo>)
-                ?.FirstOrDefault(device => device.Id == _project.PreferredOutputDeviceId);
-            if (savedOutputDevice is not null)
-                OutputDeviceCombo.SelectedItem = savedOutputDevice;
-
-            if (_project.Scenes.Count == 0)
-            {
-                AddScene("Demo");
-            }
-            else
-            {
-                foreach (var track in _project.Scenes
-                    .SelectMany(scene => scene.Layers)
-                    .SelectMany(layer => layer.Playlists)
-                    .SelectMany(playlist => playlist.Tracks)
-                    .GroupBy(track => track.Id)
-                    .Select(group => group.First()))
-                {
-                    AddTrackRow(null, track);
-                }
-
-                SelectScene(_project.Scenes[0], activate: false);
-                CurrentSceneText.Text = "ACTIVE SCENE: NONE";
-            }
+            var progress = new Progress<ProjectStoreProgress>(progressWindow.ShowProgress);
+            var loadedProject = await Task.Run(() => SoundforgeProjectStore.Load(dialog.FileName, progress));
+            progressWindow.ShowFinalizing("Preparing scene editor…");
+            await Dispatcher.Yield(DispatcherPriority.Render);
+            ApplyLoadedProject(loadedProject);
         }
         catch (Exception ex)
         {
             MessageBox.Show($"Unable to open project: {ex.Message}", "Soundforge", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+        finally
+        {
+            CloseProjectProgressWindow(progressWindow);
+        }
+    }
+
+    private ProjectProgressWindow CreateProjectProgressWindow(string heading)
+    {
+        var window = new ProjectProgressWindow(heading) { Owner = this };
+        window.Show();
+        IsEnabled = false;
+        return window;
+    }
+
+    private void ApplyLoadedProject(SoundforgeProject loadedProject)
+    {
+        _trackRows.Clear();
+        ActiveTracksPanel.Children.Clear();
+        _project = loadedProject;
+        NormalizePlaylistPools(_project);
+        _activeScene = null;
+        _selectedScene = null;
+        _muted = false;
+        MasterSlider.Value = _project.MasterVolume;
+
+        var savedOutputDevice = (OutputDeviceCombo.ItemsSource as IEnumerable<AudioDeviceInfo>)
+            ?.FirstOrDefault(device => device.Id == _project.PreferredOutputDeviceId);
+        if (savedOutputDevice is not null)
+            OutputDeviceCombo.SelectedItem = savedOutputDevice;
+
+        if (_project.Scenes.Count == 0)
+        {
+            AddScene("Demo");
+            return;
+        }
+
+        foreach (var track in _project.Scenes
+            .SelectMany(scene => scene.Layers)
+            .SelectMany(layer => layer.Playlists)
+            .SelectMany(playlist => playlist.Tracks)
+            .GroupBy(track => track.Id)
+            .Select(group => group.First()))
+        {
+            AddTrackRow(null, track);
+        }
+
+        SelectScene(_project.Scenes[0], activate: false);
+        CurrentSceneText.Text = "ACTIVE SCENE: NONE";
+    }
+
+    private void ConfigureAutosaveTimer()
+    {
+        _autosaveTimer.Stop();
+        if (!_settings.AutosaveEnabled)
+        {
+            AutosaveStatusText.Text = "Autosave: Off";
+            return;
+        }
+
+        _settings.AutosaveIntervalMinutes = Math.Clamp(_settings.AutosaveIntervalMinutes, 1, 60);
+        _autosaveTimer.Interval = TimeSpan.FromMinutes(_settings.AutosaveIntervalMinutes);
+        _autosaveTimer.Start();
+        AutosaveStatusText.Text = $"Autosave: On · {_settings.AutosaveIntervalMinutes} min";
+    }
+
+    private async Task RunAutosaveAsync()
+    {
+        if (!_settings.AutosaveEnabled || _autosaveInProgress)
+            return;
+
+        _autosaveInProgress = true;
+        try
+        {
+            AutosaveStatusText.Text = "Autosave: Saving…";
+            _project.MasterVolume = MasterSlider.Value;
+            var projectJson = SoundforgeProjectStore.SerializeRecovery(_project);
+            var autosavePath = GetAutosavePath();
+            await Task.Run(() => SoundforgeProjectStore.WriteRecovery(autosavePath, projectJson));
+            AutosaveStatusText.Text = $"Autosaved {DateTime.Now:HH:mm}";
+        }
+        catch (Exception ex)
+        {
+            AutosaveStatusText.Text = "Autosave: Failed";
+            AutosaveStatusText.ToolTip = ex.Message;
+        }
+        finally
+        {
+            _autosaveInProgress = false;
+        }
+    }
+
+    private void TryRecoverAutosave()
+    {
+        var autosavePath = GetAutosavePath();
+        if (_previousSessionEndedClean)
+        {
+            TryDeleteAutosave(autosavePath);
+            return;
+        }
+
+        if (!_settings.AutosaveEnabled || !File.Exists(autosavePath))
+            return;
+
+        var savedAt = File.GetLastWriteTime(autosavePath);
+        var choice = MessageBox.Show(
+            $"Soundforge did not close normally last time.\n\nRestore the autosave from {savedAt:g}?",
+            "Recover Soundforge project",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+
+        if (choice != MessageBoxResult.Yes)
+        {
+            TryDeleteAutosave(autosavePath);
+            return;
+        }
+
+        try
+        {
+            _audioEngine.StopAll();
+            ApplyLoadedProject(SoundforgeProjectStore.Load(autosavePath));
+            AutosaveStatusText.Text = $"Recovered autosave from {savedAt:HH:mm}";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"Soundforge could not recover the autosave:\n\n{ex.Message}",
+                "Autosave recovery",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    private string GetAutosavePath()
+    {
+        var folder = string.IsNullOrWhiteSpace(_settings.AutosaveFolder)
+            ? GetDefaultAutosaveFolder()
+            : _settings.AutosaveFolder;
+        return Path.Combine(folder, "Soundforge-recovery.autosave.json");
+    }
+
+    private static string GetDefaultAutosaveFolder() =>
+        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "Soundforge-Autosaves"));
+
+    private static void TryDeleteAutosave(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // A stale recovery file is harmless; the next successful autosave replaces it atomically.
+        }
+    }
+
+    private void CloseProjectProgressWindow(ProjectProgressWindow window)
+    {
+        IsEnabled = true;
+        window.FinishAndClose();
+        Activate();
     }
 
     private void AddScene_Click(object sender, RoutedEventArgs e)
@@ -363,6 +575,35 @@ public partial class MainWindow : Window
 
         AddScene(name);
         NewSceneNameText.Clear();
+    }
+
+    private void MoveSceneUp_Click(object sender, RoutedEventArgs e) => MoveSelectedScene(-1);
+
+    private void MoveSceneDown_Click(object sender, RoutedEventArgs e) => MoveSelectedScene(1);
+
+    private void MoveSelectedScene(int offset)
+    {
+        if (_selectedScene is null || !SceneOrdering.Move(_project.Scenes, _selectedScene, offset))
+            return;
+
+        RefreshSceneButtons();
+    }
+
+    private void SortScenes_Click(object sender, RoutedEventArgs e)
+    {
+        if (_project.Scenes.Count < 2)
+            return;
+
+        var choice = MessageBox.Show(
+            "Sort every scene alphabetically from A to Z?\n\nThis changes the scene order saved with the project.",
+            "Sort Scenes",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (choice != MessageBoxResult.Yes)
+            return;
+
+        SceneOrdering.SortByName(_project.Scenes);
+        RefreshSceneButtons();
     }
 
     private void SaveSceneName_Click(object sender, RoutedEventArgs e)
@@ -527,6 +768,10 @@ public partial class MainWindow : Window
             button.Click += (_, _) => SelectScene(scene);
             SceneButtonsPanel.Children.Add(button);
         }
+
+        var selectedIndex = _selectedScene is null ? -1 : _project.Scenes.IndexOf(_selectedScene);
+        MoveSceneUpButton.IsEnabled = selectedIndex > 0;
+        MoveSceneDownButton.IsEnabled = selectedIndex >= 0 && selectedIndex < _project.Scenes.Count - 1;
     }
 
     private void RenderLayers()
@@ -995,7 +1240,8 @@ public partial class MainWindow : Window
     private void UpdateProgress()
     {
         AdvanceFinishedMusic();
-        var sessionsByTrackId = _audioEngine.GetSessions().ToDictionary(session => session.TrackId);
+        var sessions = _audioEngine.GetSessions();
+        var sessionsByTrackId = sessions.ToDictionary(session => session.TrackId);
         foreach (var row in _trackRows.Values)
         {
             if (sessionsByTrackId.TryGetValue(row.Track.Id, out var session))
@@ -1016,11 +1262,16 @@ public partial class MainWindow : Window
             }
         }
 
+        UpdatePlaylistActiveIndicators(sessions);
     }
 
     protected override void OnClosed(EventArgs e)
     {
         _timer.Stop();
+        _autosaveTimer.Stop();
+        _settings.LastShutdownClean = true;
+        _settingsStore.Save(_settings);
+        _controlServer.Dispose();
         _audioEngine.Dispose();
         base.OnClosed(e);
     }
@@ -1057,6 +1308,7 @@ public partial class MainWindow : Window
         var stop = new Button { Content = "■ Stop", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(6, 0, 0, 0) };
         var removeFromScene = new Button { Content = "Remove from Scene", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(6, 0, 0, 0) };
         var deleteSource = new Button { Content = "Delete Source", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(6, 0, 0, 0), ToolTip = "Remove this source from the entire Soundforge project" };
+        var editSource = new Button { Content = "Edit", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(6, 0, 0, 0), ToolTip = "Set this source's playback start and end times" };
 
         playPause.Click += (_, _) =>
         {
@@ -1083,6 +1335,7 @@ public partial class MainWindow : Window
         stop.Click += (_, _) => StopTrack(track.Id);
         removeFromScene.Click += (_, _) => RemoveTrackFromSelectedScene(track);
         deleteSource.Click += (_, _) => DeleteSourceFromProject(track);
+        editSource.Click += (_, _) => EditSource(track);
         volume.ValueChanged += (_, args) =>
         {
             var activeSession = _audioEngine.GetSessions().FirstOrDefault(item => item.TrackId == track.Id);
@@ -1123,6 +1376,7 @@ public partial class MainWindow : Window
         controls.Children.Add(stop);
         controls.Children.Add(removeFromScene);
         controls.Children.Add(deleteSource);
+        controls.Children.Add(editSource);
         controls.Children.Add(new TextBlock { Text = "Volume", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) });
         controls.Children.Add(volume);
         controls.Children.Add(autoPlay);
@@ -1148,6 +1402,40 @@ public partial class MainWindow : Window
         var session = _audioEngine.GetSessions().FirstOrDefault(item => item.TrackId == trackId);
         if (session is not null)
             _audioEngine.Stop(session.SessionId, GetFadeOutDuration(_selectedScene));
+    }
+
+    private void EditSource(Track track)
+    {
+        TrackEditWindow editor;
+        try
+        {
+            editor = new TrackEditWindow(track)
+            {
+                Owner = this
+            };
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"Soundforge could not open this source for editing:\n\n{ex.Message}",
+                "Edit Source",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        if (editor.ShowDialog() != true)
+            return;
+
+        var activeSession = _audioEngine.GetSessions().FirstOrDefault(item => item.TrackId == track.Id);
+        if (activeSession is null)
+            return;
+
+        _audioEngine.Stop(activeSession.SessionId, TimeSpan.Zero);
+        var restartedSessionId = _audioEngine.Start(track);
+        if (_trackRows.TryGetValue(track.Id, out var row))
+            row.SessionId = restartedSessionId;
+        ApplyLayerMix(track.LayerId);
     }
 
     private void RemoveTrackFromSelectedScene(Track track)
@@ -1238,6 +1526,7 @@ public partial class MainWindow : Window
             expander.Content = null;
         }
         ActiveTracksPanel.Children.Clear();
+        _playlistHeadings.Clear();
         var visibleTrackCount = 0;
         var scenes = isGlobalView ? _project.Scenes : _selectedScene is null ? [] : [_selectedScene];
         var renderedTrackIds = new HashSet<Guid>();
@@ -1257,30 +1546,41 @@ public partial class MainWindow : Window
                     if (rows.Count == 0)
                         continue;
 
-                    var activeMarker = layer.PlaybackBehavior == LayerPlaybackBehavior.Music && layer.ActivePlaylistId == playlist.Id
-                        ? "  •  ACTIVE"
-                        : string.Empty;
                     var heading = isGlobalView
-                        ? $"{scene.Name.ToUpperInvariant()}  /  {layer.Name.ToUpperInvariant()}  /  {playlist.Name.ToUpperInvariant()}{activeMarker}"
-                        : $"{layer.Name.ToUpperInvariant()}  /  {playlist.Name.ToUpperInvariant()}{activeMarker}";
-                    var section = new StackPanel();
-                    foreach (var row in rows)
-                    {
-                        row.Panel.Visibility = Visibility.Visible;
-                        section.Children.Add(row.Panel);
-                        visibleTrackCount++;
-                    }
-
+                        ? $"{scene.Name.ToUpperInvariant()}  /  {layer.Name.ToUpperInvariant()}  /  {playlist.Name.ToUpperInvariant()}"
+                        : $"{layer.Name.ToUpperInvariant()}  /  {playlist.Name.ToUpperInvariant()}";
+                    var headingControl = CreateLayerHeading(heading);
                     var expander = new Expander
                     {
-                        Header = CreateLayerHeading(heading),
-                        Content = section,
+                        Header = headingControl,
                         IsExpanded = playlist.IsExpanded,
                         Foreground = new SolidColorBrush(Color.FromRgb(242, 242, 242))
                     };
-                    expander.Expanded += (_, _) => playlist.IsExpanded = true;
-                    expander.Collapsed += (_, _) => playlist.IsExpanded = false;
+                    if (headingControl.Child is TextBlock headingText)
+                    {
+                        _playlistHeadings[playlist.Id] = new PlaylistHeadingState(
+                            headingText,
+                            heading,
+                            layer,
+                            playlist,
+                            playlist.Tracks.Select(track => track.Id).ToHashSet());
+                    }
+                    if (playlist.IsExpanded)
+                        expander.Content = CreateTrackSection(rows);
+                    expander.Expanded += (_, _) =>
+                    {
+                        playlist.IsExpanded = true;
+                        expander.Content ??= CreateTrackSection(rows);
+                    };
+                    expander.Collapsed += (_, _) =>
+                    {
+                        playlist.IsExpanded = false;
+                        if (expander.Content is Panel collapsedSection)
+                            collapsedSection.Children.Clear();
+                        expander.Content = null;
+                    };
                     ActiveTracksPanel.Children.Add(expander);
+                    visibleTrackCount += rows.Count;
                 }
             }
         }
@@ -1290,19 +1590,23 @@ public partial class MainWindow : Window
             var unassignedRows = _trackRows.Values.Where(row => row.Track.LayerId is null).ToList();
             if (unassignedRows.Count > 0)
             {
-                var section = new StackPanel();
-                foreach (var row in unassignedRows)
-                {
-                    row.Panel.Visibility = Visibility.Visible;
-                    section.Children.Add(row.Panel);
-                    visibleTrackCount++;
-                }
-                ActiveTracksPanel.Children.Add(new Expander
+                var unassignedExpander = new Expander
                 {
                     Header = CreateLayerHeading("UNASSIGNED SOURCES"),
-                    Content = section,
                     IsExpanded = false
-                });
+                };
+                unassignedExpander.Expanded += (_, _) =>
+                {
+                    unassignedExpander.Content ??= CreateTrackSection(unassignedRows);
+                };
+                unassignedExpander.Collapsed += (_, _) =>
+                {
+                    if (unassignedExpander.Content is Panel collapsedSection)
+                        collapsedSection.Children.Clear();
+                    unassignedExpander.Content = null;
+                };
+                ActiveTracksPanel.Children.Add(unassignedExpander);
+                visibleTrackCount += unassignedRows.Count;
             }
         }
 
@@ -1313,6 +1617,36 @@ public partial class MainWindow : Window
             ? "Load one or more audio files to begin mixing."
             : "No tracks are assigned to this scene.";
         EmptyTracksText.Visibility = visibleTrackCount == 0 ? Visibility.Visible : Visibility.Collapsed;
+        UpdatePlaylistActiveIndicators(_audioEngine.GetSessions());
+    }
+
+    private void UpdatePlaylistActiveIndicators(IReadOnlyList<PlaybackSessionInfo> sessions)
+    {
+        foreach (var state in _playlistHeadings.Values)
+        {
+            var isActive = state.Layer.PlaybackBehavior switch
+            {
+                LayerPlaybackBehavior.Music => state.Layer.ActivePlaylistId == state.Playlist.Id,
+                LayerPlaybackBehavior.Ambience => sessions.Any(session =>
+                    session.IsPlaying && state.TrackIds.Contains(session.TrackId)),
+                _ => false
+            };
+
+            state.Heading.Text = isActive
+                ? $"{state.BaseHeading}  •  ACTIVE"
+                : state.BaseHeading;
+        }
+    }
+
+    private static StackPanel CreateTrackSection(IEnumerable<TrackRow> rows)
+    {
+        var section = new StackPanel();
+        foreach (var row in rows)
+        {
+            row.Panel.Visibility = Visibility.Visible;
+            section.Children.Add(row.Panel);
+        }
+        return section;
     }
 
     private static Border CreateLayerHeading(string heading) => new()
@@ -1468,9 +1802,7 @@ public partial class MainWindow : Window
         var musicTrackIds = musicTracks.Select(track => track.Id).ToHashSet();
         var finishedMusicSessions = _audioEngine.GetSessions()
             .Where(session => musicTrackIds.Contains(session.TrackId)
-                && !session.IsPlaying
-                && session.Length > TimeSpan.Zero
-                && session.Position >= session.Length)
+                && session.HasReachedEnd)
             .ToList();
 
         foreach (var finishedSession in finishedMusicSessions)
@@ -1537,4 +1869,10 @@ public partial class MainWindow : Window
 
     private sealed record LayerChoice(Guid? LayerId, string Display);
     private sealed record PlaylistChoice(Guid PlaylistId, string Display);
+    private sealed record PlaylistHeadingState(
+        TextBlock Heading,
+        string BaseHeading,
+        Layer Layer,
+        Playlist Playlist,
+        HashSet<Guid> TrackIds);
 }

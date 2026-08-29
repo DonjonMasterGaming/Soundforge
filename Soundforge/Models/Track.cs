@@ -9,4 +9,6 @@ public sealed class Track
     public string FilePath { get; set; } = "";
     public double Volume { get; set; } = 1.0;
     public bool Loop { get; set; } = true;
+    public double TrimStartSeconds { get; set; }
+    public double? TrimEndSeconds { get; set; }
 }
