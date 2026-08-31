@@ -97,11 +97,40 @@ public sealed class AudioEngine : IDisposable
                 StartFade(sessionId, 1f, fadeDuration);
             return sessionId;
         }
+        catch (Exception ex)
+        {
+            lock (_sync)
+            {
+                _sessions.Remove(sessionId);
+                if (_sessions.Count == 0)
+                    GCSettings.LatencyMode = _normalGcLatencyMode;
+            }
+            player.Dispose();
+            throw new InvalidOperationException($"Could not play '{track.Name}': {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>Prepare replacement playback before retiring any existing sessions.</summary>
+    public IReadOnlyList<Guid> Transition(
+        IEnumerable<Track> tracks, IEnumerable<Guid> retiringSessionIds,
+        TimeSpan fadeIn, TimeSpan fadeOut)
+    {
+        var started = new List<Guid>();
+        try
+        {
+            foreach (var track in tracks)
+                started.Add(Start(track, fadeIn));
+        }
         catch
         {
-            player.Dispose();
+            foreach (var id in started)
+                Stop(id);
             throw;
         }
+
+        foreach (var id in retiringSessionIds)
+            Stop(id, fadeOut);
+        return started;
     }
 
     public bool Pause(Guid sessionId) => WithSession(sessionId, session => session.Player.Pause());

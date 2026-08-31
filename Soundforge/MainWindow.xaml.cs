@@ -192,7 +192,7 @@ public partial class MainWindow : Window
             return new SoundforgeControlResult(false, "That scene does not exist in the open project.");
 
         SelectScene(scene, activate: false);
-        ActivateScene(scene);
+        ActivateScene(scene, reportErrors: false);
         return new SoundforgeControlResult(true, $"Activated {scene.Name}.");
     }
 
@@ -228,9 +228,20 @@ public partial class MainWindow : Window
 
         var sceneWasActive = _activeScene == scene;
         SelectScene(scene, activate: false);
-        ActivatePlaylistPool(target.layer, target.playlist);
-        if (!sceneWasActive)
-            ActivateScene(scene);
+        var previousPoolId = target.layer.ActivePlaylistId;
+        try
+        {
+            ActivatePlaylistPool(target.layer, target.playlist, reportErrors: false);
+            if (!sceneWasActive)
+                ActivateScene(scene, reportErrors: false);
+        }
+        catch
+        {
+            target.layer.ActivePlaylistId = previousPoolId;
+            RenderLayers();
+            RefreshTrackVisibility();
+            throw;
+        }
         return new SoundforgeControlResult(true, $"Activated {scene.Name} / {target.playlist.Name}.");
     }
 
@@ -1113,18 +1124,49 @@ public partial class MainWindow : Window
         scene.Layers = defaults.Concat(customLayers).ToList();
     }
 
-    private void ActivatePlaylistPool(Layer layer, Playlist playlist)
+    private bool RunPlaybackAction(Action action, bool reportErrors = true)
     {
-        if (layer.ActivePlaylistId == playlist.Id)
+        try
+        {
+            action();
+            return true;
+        }
+        catch (Exception ex) when (reportErrors)
+        {
+            MessageBox.Show(this, ex.Message, "Unable to play source", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+    }
+
+    private void ActivatePlaylistPool(Layer layer, Playlist playlist, bool reportErrors = true)
+    {
+        var isLiveMusic = _activeScene == _selectedScene && _activeScene?.Layers.Contains(layer) == true
+            && layer.PlaybackBehavior == LayerPlaybackBehavior.Music;
+        if (layer.ActivePlaylistId == playlist.Id && (!isLiveMusic || _audioEngine.GetSessions()
+                .Any(session => playlist.Tracks.Any(track => track.Id == session.TrackId))))
             return;
 
-        layer.ActivePlaylistId = playlist.Id;
-        if (_activeScene == _selectedScene && _activeScene?.Layers.Contains(layer) == true && layer.PlaybackBehavior == LayerPlaybackBehavior.Music)
-            SwitchLiveMusicPool(layer, playlist);
-
-        RenderLayers();
-        RefreshTrackLayerSelectors();
-        RefreshTrackVisibility();
+        RunPlaybackAction(() =>
+        {
+            var previousId = layer.ActivePlaylistId;
+            layer.ActivePlaylistId = playlist.Id;
+            try
+            {
+                if (isLiveMusic)
+                    SwitchLiveMusicPool(layer, playlist);
+            }
+            catch
+            {
+                layer.ActivePlaylistId = previousId;
+                throw;
+            }
+            finally
+            {
+                RenderLayers();
+                RefreshTrackLayerSelectors();
+                RefreshTrackVisibility();
+            }
+        }, reportErrors);
     }
 
     private void SwitchLiveMusicPool(Layer layer, Playlist playlist)
@@ -1132,22 +1174,16 @@ public partial class MainWindow : Window
         if (_activeScene is null)
             return;
 
-        foreach (var session in _audioEngine.GetSessions()
-                     .Where(session => _trackRows.TryGetValue(session.TrackId, out var row) && row.Track.LayerId == layer.Id)
-                     .ToList())
-        {
-            _audioEngine.Stop(session.SessionId, GetFadeOutDuration(_activeScene));
-        }
-
+        var targets = GetAutoAmbienceTracks(_activeScene).ToList();
         if (playlist.Tracks.Count > 0)
-        {
-            var track = playlist.Tracks[Random.Shared.Next(playlist.Tracks.Count)];
-            var sessionId = _audioEngine.Start(track, GetFadeInDuration(_activeScene));
-            AddTrackRow(sessionId, track);
-            ApplyLayerMix(layer.Id);
-        }
+            targets.Add(playlist.Tracks[Random.Shared.Next(playlist.Tracks.Count)]);
 
-        SyncLinkedAmbience(_activeScene);
+        var affectedLayers = _activeScene.Layers
+            .Where(candidate => candidate.Id == layer.Id || candidate.PlaybackBehavior == LayerPlaybackBehavior.Ambience)
+            .Select(candidate => candidate.Id).ToHashSet();
+        var sessions = _audioEngine.GetSessions().Where(session =>
+            _trackRows.TryGetValue(session.TrackId, out var row) && row.Track.LayerId is Guid id && affectedLayers.Contains(id));
+        TransitionTracks(targets, sessions, _activeScene);
     }
 
     private void DeletePlaylistPool(Layer layer, Playlist playlist)
@@ -1176,7 +1212,7 @@ public partial class MainWindow : Window
         {
             layer.ActivePlaylistId = fallback.Id;
             if (_activeScene == _selectedScene && layer.PlaybackBehavior == LayerPlaybackBehavior.Music)
-                SwitchLiveMusicPool(layer, fallback);
+                RunPlaybackAction(() => SwitchLiveMusicPool(layer, fallback));
         }
 
         RenderLayers();
@@ -1241,7 +1277,8 @@ public partial class MainWindow : Window
     {
         AdvanceFinishedMusic();
         var sessions = _audioEngine.GetSessions();
-        var sessionsByTrackId = sessions.ToDictionary(session => session.TrackId);
+        var sessionsByTrackId = sessions.GroupBy(session => session.TrackId)
+            .ToDictionary(group => group.Key, group => group.Last());
         foreach (var row in _trackRows.Values)
         {
             if (sessionsByTrackId.TryGetValue(row.Track.Id, out var session))
@@ -1310,7 +1347,7 @@ public partial class MainWindow : Window
         var deleteSource = new Button { Content = "Delete Source", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(6, 0, 0, 0), ToolTip = "Remove this source from the entire Soundforge project" };
         var editSource = new Button { Content = "Edit", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(6, 0, 0, 0), ToolTip = "Set this source's playback start and end times" };
 
-        playPause.Click += (_, _) =>
+        playPause.Click += (_, _) => RunPlaybackAction(() =>
         {
             var row = _trackRows[track.Id];
             var session = _audioEngine.GetSessions().FirstOrDefault(item => item.TrackId == track.Id);
@@ -1331,7 +1368,7 @@ public partial class MainWindow : Window
                 _audioEngine.Resume(session.SessionId);
                 playPause.Content = "⏸ Pause";
             }
-        };
+        });
         stop.Click += (_, _) => StopTrack(track.Id);
         removeFromScene.Click += (_, _) => RemoveTrackFromSelectedScene(track);
         deleteSource.Click += (_, _) => DeleteSourceFromProject(track);
@@ -1431,11 +1468,13 @@ public partial class MainWindow : Window
         if (activeSession is null)
             return;
 
-        _audioEngine.Stop(activeSession.SessionId, TimeSpan.Zero);
-        var restartedSessionId = _audioEngine.Start(track);
-        if (_trackRows.TryGetValue(track.Id, out var row))
-            row.SessionId = restartedSessionId;
-        ApplyLayerMix(track.LayerId);
+        RunPlaybackAction(() =>
+        {
+            var restartedSessionId = _audioEngine.Transition([track], [activeSession.SessionId], TimeSpan.Zero, TimeSpan.Zero).Single();
+            if (_trackRows.TryGetValue(track.Id, out var row))
+                row.SessionId = restartedSessionId;
+            ApplyLayerMix(track.LayerId);
+        });
     }
 
     private void RemoveTrackFromSelectedScene(Track track)
@@ -1695,24 +1734,16 @@ public partial class MainWindow : Window
             .Select(track => track.Id)
             .ToHashSet();
         var targetTracks = GetAutoAmbienceTracks(scene).ToList();
-        var targetIds = targetTracks.Select(track => track.Id).ToHashSet();
         var activeSessions = _audioEngine.GetSessions();
-
-        foreach (var session in activeSessions.Where(session => allAmbienceTrackIds.Contains(session.TrackId) && !targetIds.Contains(session.TrackId)))
-            _audioEngine.Stop(session.SessionId, GetFadeOutDuration(scene));
-
-        var activeTrackIds = activeSessions.Select(session => session.TrackId).ToHashSet();
-        foreach (var track in targetTracks.Where(track => !activeTrackIds.Contains(track.Id)))
-        {
-            var sessionId = _audioEngine.Start(track, GetFadeInDuration(scene));
-            AddTrackRow(sessionId, track);
-            ApplyLayerMix(track.LayerId);
-        }
+        RunPlaybackAction(() => TransitionTracks(targetTracks,
+            activeSessions.Where(session => allAmbienceTrackIds.Contains(session.TrackId)), scene));
     }
 
-    private void ActivateScene(Scene scene)
+    private void ActivateScene(Scene scene, bool reportErrors = true) =>
+        RunPlaybackAction(() => ActivateSceneCore(scene), reportErrors);
+
+    private void ActivateSceneCore(Scene scene)
     {
-        var sceneSources = GetSceneSources(scene).ToList();
         var musicSources = GetMusicTracks(scene).ToList();
         var selectedMusic = musicSources.Count == 0 ? null : musicSources[Random.Shared.Next(musicSources.Count)];
         var ambienceSources = GetAutoAmbienceTracks(scene);
@@ -1723,25 +1754,29 @@ public partial class MainWindow : Window
             .GroupBy(track => track.Id)
             .Select(group => group.First())
             .ToList();
-        var targetTrackIds = targetTracks.Select(track => track.Id).ToHashSet();
-        var activeSessions = _audioEngine.GetSessions();
-
-        foreach (var session in activeSessions.Where(session => !targetTrackIds.Contains(session.TrackId)))
-            _audioEngine.Stop(session.SessionId, GetFadeOutDuration(scene));
-
-        var activeTrackIds = activeSessions.Select(session => session.TrackId).ToHashSet();
-        foreach (var track in targetTracks.Where(track => !activeTrackIds.Contains(track.Id)))
-        {
-            var sessionId = _audioEngine.Start(track, GetFadeInDuration(scene));
-            AddTrackRow(sessionId, track);
-            ApplyLayerMix(track.LayerId);
-            EmptyTracksText.Visibility = Visibility.Collapsed;
-        }
+        TransitionTracks(targetTracks, _audioEngine.GetSessions(), scene);
 
         _activeScene = scene;
         CurrentSceneText.Text = $"ACTIVE SCENE: {scene.Name.ToUpperInvariant()}";
         RefreshSceneButtons();
         RefreshTrackVisibility();
+    }
+
+    private void TransitionTracks(IEnumerable<Track> targets, IEnumerable<PlaybackSessionInfo> affectedSessions, Scene scene)
+    {
+        var tracks = targets.DistinctBy(track => track.Id).ToList();
+        var targetIds = tracks.Select(track => track.Id).ToHashSet();
+        var activeIds = _audioEngine.GetSessions().Select(session => session.TrackId).ToHashSet();
+        var newTracks = tracks.Where(track => !activeIds.Contains(track.Id)).ToList();
+        var retiringIds = affectedSessions.Where(session => !targetIds.Contains(session.TrackId))
+            .Select(session => session.SessionId).ToList();
+        var startedIds = _audioEngine.Transition(newTracks, retiringIds, GetFadeInDuration(scene), GetFadeOutDuration(scene));
+        for (var index = 0; index < newTracks.Count; index++)
+        {
+            AddTrackRow(startedIds[index], newTracks[index]);
+            ApplyLayerMix(newTracks[index].LayerId);
+            EmptyTracksText.Visibility = Visibility.Collapsed;
+        }
     }
 
     private IEnumerable<Track> GetSceneTracks(Scene scene) =>
@@ -1810,9 +1845,12 @@ public partial class MainWindow : Window
             _audioEngine.Stop(finishedSession.SessionId);
             var candidates = musicTracks.Where(track => track.Id != finishedSession.TrackId).ToList();
             var nextTrack = (candidates.Count > 0 ? candidates : musicTracks)[Random.Shared.Next(candidates.Count > 0 ? candidates.Count : musicTracks.Count)];
-            var nextSessionId = _audioEngine.Start(nextTrack, GetFadeInDuration(_activeScene));
-            AddTrackRow(nextSessionId, nextTrack);
-            ApplyLayerMix(nextTrack.LayerId);
+            RunPlaybackAction(() =>
+            {
+                var nextSessionId = _audioEngine.Start(nextTrack, GetFadeInDuration(_activeScene));
+                AddTrackRow(nextSessionId, nextTrack);
+                ApplyLayerMix(nextTrack.LayerId);
+            });
         }
     }
 

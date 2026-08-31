@@ -10,7 +10,7 @@ public sealed class AudioTrackPlayer : IDisposable
     private readonly object _sync = new();
     private IWavePlayer? _output;
     private MMDevice? _outputDevice;
-    private AudioFileReader? _reader;
+    private LocalAudioReader? _reader;
     private TrimmedSampleProvider? _playbackSource;
     private string? _path;
     private string? _outputDeviceId;
@@ -47,7 +47,7 @@ public sealed class AudioTrackPlayer : IDisposable
             _path = path;
             _loop = loop;
 
-            _reader = new AudioFileReader(path);
+            _reader = new LocalAudioReader(path);
             _trimStart = ClampTime(trimStart ?? TimeSpan.Zero, TimeSpan.Zero, _reader.TotalTime);
             _trimEnd = ClampTime(trimEnd ?? _reader.TotalTime, _trimStart, _reader.TotalTime);
             if (_trimEnd <= _trimStart)
@@ -162,12 +162,12 @@ public sealed class AudioTrackPlayer : IDisposable
 
     private sealed class TrimmedSampleProvider : ISampleProvider
     {
-        private readonly AudioFileReader _source;
+        private readonly LocalAudioReader _source;
         private readonly Func<bool> _loop;
         private readonly TimeSpan _start;
         private readonly TimeSpan _end;
 
-        public TrimmedSampleProvider(AudioFileReader source, Func<bool> loop, TimeSpan start, TimeSpan end)
+        public TrimmedSampleProvider(LocalAudioReader source, Func<bool> loop, TimeSpan start, TimeSpan end)
         {
             _source = source;
             _loop = loop;
@@ -183,20 +183,22 @@ public sealed class AudioTrackPlayer : IDisposable
         public int Read(float[] buffer, int offset, int count)
         {
             var total = 0;
+            var retriedLoop = false;
             while (total < count)
             {
                 var secondsRemaining = (_end - _source.CurrentTime).TotalSeconds;
-                var samplesRemaining = (int)Math.Ceiling(
-                    Math.Max(0, secondsRemaining) * WaveFormat.SampleRate * WaveFormat.Channels);
-                var requested = Math.Min(count - total, samplesRemaining);
+                var framesRemaining = Math.Floor(Math.Max(0, secondsRemaining) * WaveFormat.SampleRate + 0.0001);
+                var requested = (int)Math.Min(count - total, framesRemaining * WaveFormat.Channels);
+                requested -= requested % WaveFormat.Channels;
                 var read = requested > 0 ? _source.Read(buffer, offset + total, requested) : 0;
                 if (read > 0)
                 {
                     total += read;
+                    retriedLoop = false;
                     continue;
                 }
 
-                if (!_loop())
+                if (!_loop() || retriedLoop)
                 {
                     HasReachedEnd = true;
                     break;
@@ -204,6 +206,7 @@ public sealed class AudioTrackPlayer : IDisposable
 
                 HasReachedEnd = false;
                 _source.CurrentTime = _start;
+                retriedLoop = true;
             }
             return total;
         }

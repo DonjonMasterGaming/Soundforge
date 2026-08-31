@@ -1,5 +1,5 @@
 using System.Globalization;
-using NAudio.Wave;
+using Soundforge.Audio;
 using Soundforge.Models;
 using System.Windows;
 
@@ -15,7 +15,7 @@ public partial class TrackEditWindow : Window
         InitializeComponent();
         _track = track;
 
-        using var reader = new AudioFileReader(track.FilePath);
+        using var reader = new LocalAudioReader(track.FilePath);
         _duration = reader.TotalTime;
 
         TrackNameText.Text = track.Name;
