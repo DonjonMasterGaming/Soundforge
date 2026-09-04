@@ -351,7 +351,9 @@ public partial class MainWindow : Window
         {
             _project.MasterVolume = MasterSlider.Value;
             var progress = new Progress<ProjectStoreProgress>(progressWindow.ShowProgress);
-            await Task.Run(() => SoundforgeProjectStore.Save(dialog.FileName, _project, progress));
+            // Capture on the UI thread before remote controls or timers can mutate the model.
+            var snapshot = SoundforgeProjectStore.CreateSnapshot(_project);
+            await Task.Run(() => SoundforgeProjectStore.Save(dialog.FileName, snapshot, progress));
         }
         catch (Exception ex)
         {

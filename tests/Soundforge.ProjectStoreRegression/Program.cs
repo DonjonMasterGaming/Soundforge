@@ -15,6 +15,17 @@ Directory.CreateDirectory(testRoot);
 
 try
 {
+    if (args.Length == 2 && args[0] == "--benchmark-compression")
+    {
+        CompressionBenchmark.Run(args[1], testRoot);
+        return;
+    }
+    if (args.Length == 2 && args[0] == "--benchmark-cache")
+    {
+        CompressionBenchmark.Run(args[1], testRoot, cacheOnly: true);
+        return;
+    }
+    CacheRegression.Run(testRoot);
     var sourcePath = Path.Combine(testRoot, "source.wav");
     File.WriteAllBytes(sourcePath, [0x52, 0x49, 0x46, 0x46]);
 

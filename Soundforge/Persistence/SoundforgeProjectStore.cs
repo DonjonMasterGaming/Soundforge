@@ -12,6 +12,8 @@ public static class SoundforgeProjectStore
 {
     private const string ManifestEntryName = "project.json";
     private const string SourceFolderName = "sources";
+    private const string CacheIndexFileName = ".soundforge-cache.json";
+    private static readonly uint[] CrcTable = CreateCrcTable();
 
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
@@ -28,9 +30,7 @@ public static class SoundforgeProjectStore
         ArgumentNullException.ThrowIfNull(project);
 
         progress?.Report(ProjectStoreProgress.Indeterminate("Preparing project…"));
-        var exportedProject = JsonSerializer.Deserialize<SoundforgeProject>(
-            JsonSerializer.Serialize(project, SerializerOptions), SerializerOptions)
-            ?? throw new InvalidDataException("Unable to prepare the Soundforge project for export.");
+        var exportedProject = CreateSnapshot(project);
         var tracks = GetTracks(exportedProject).ToList();
         var totalBytes = tracks
             .Where(track => File.Exists(track.FilePath))
@@ -124,6 +124,10 @@ public static class SoundforgeProjectStore
         return JsonSerializer.Serialize(project, SerializerOptions);
     }
 
+    public static SoundforgeProject CreateSnapshot(SoundforgeProject project) =>
+        JsonSerializer.Deserialize<SoundforgeProject>(SerializeRecovery(project), SerializerOptions)
+        ?? throw new InvalidDataException("Unable to prepare the Soundforge project for export.");
+
     public static void WriteRecovery(string path, string projectJson)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -172,14 +176,28 @@ public static class SoundforgeProjectStore
         var totalBytes = portableTracks.Sum(item => item.Entry.Length);
         long completedBytes = 0;
         var completedItems = 0;
+        var cacheIndexPath = Path.Combine(importFolder, CacheIndexFileName);
+        var cacheIndex = ReadCacheIndex(cacheIndexPath);
+        var updatedIndex = new CacheIndex();
 
         foreach (var item in portableTracks)
         {
             var track = item.Track;
             var source = item.Entry;
             var importedPath = Path.Combine(importFolder, Path.GetFileName(source.FullName));
+            var cacheKey = Path.GetFileName(source.FullName);
             try
             {
+                if (IsCachedSourceValid(importedPath, source, cacheIndex.Files.GetValueOrDefault(cacheKey),
+                        progress, track.Name, completedBytes, totalBytes, completedItems, portableTracks.Count))
+                {
+                    updatedIndex.Files[cacheKey] = CachedSource.From(importedPath, source);
+                    completedBytes += source.Length;
+                    completedItems++;
+                    track.FilePath = importedPath;
+                    continue;
+                }
+
                 progress?.Report(new ProjectStoreProgress(
                     "Extracting audio files…",
                     track.Name,
@@ -187,18 +205,32 @@ public static class SoundforgeProjectStore
                     totalBytes,
                     completedItems,
                     portableTracks.Count));
-                using var input = source.Open();
-                using var output = new FileStream(importedPath, FileMode.Create, FileAccess.Write, FileShare.None);
-                CopyWithProgress(input, output, bytesCopied =>
+                var temporaryImportPath = $"{importedPath}.{Guid.NewGuid():N}.tmp";
+                try
                 {
-                    progress?.Report(new ProjectStoreProgress(
-                        "Extracting audio files…",
-                        track.Name,
-                        completedBytes + bytesCopied,
-                        totalBytes,
-                        completedItems,
-                        portableTracks.Count));
-                });
+                    using (var input = source.Open())
+                    using (var output = new FileStream(temporaryImportPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    {
+                        CopyWithProgress(input, output, bytesCopied =>
+                        {
+                            progress?.Report(new ProjectStoreProgress(
+                                "Extracting audio files…",
+                                track.Name,
+                                completedBytes + bytesCopied,
+                                totalBytes,
+                                completedItems,
+                                portableTracks.Count));
+                        }, source.Crc32, source.Length);
+                        output.Flush(flushToDisk: true);
+                    }
+                    File.Move(temporaryImportPath, importedPath, overwrite: true);
+                }
+                finally
+                {
+                    if (File.Exists(temporaryImportPath))
+                        File.Delete(temporaryImportPath);
+                }
+                updatedIndex.Files[cacheKey] = CachedSource.From(importedPath, source);
                 completedBytes += source.Length;
                 completedItems++;
             }
@@ -210,6 +242,8 @@ public static class SoundforgeProjectStore
             }
             track.FilePath = importedPath;
         }
+
+        WriteCacheIndex(cacheIndexPath, updatedIndex);
 
         return project ?? throw new InvalidDataException("The file does not contain a Soundforge project.");
     }
@@ -253,16 +287,130 @@ public static class SoundforgeProjectStore
             .GroupBy(track => track.Id)
             .Select(group => group.First());
 
-    private static void CopyWithProgress(Stream input, Stream output, Action<long> report)
+    private static void CopyWithProgress(Stream input, Stream output, Action<long> report,
+        uint? expectedCrc = null, long? expectedLength = null)
     {
         var buffer = new byte[4 * 1024 * 1024];
         long copied = 0;
+        uint crc = uint.MaxValue;
         int read;
         while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
         {
             output.Write(buffer, 0, read);
+            if (expectedCrc.HasValue)
+                crc = UpdateCrc(crc, buffer, read);
             copied += read;
             report(copied);
+        }
+        if ((expectedCrc.HasValue && ~crc != expectedCrc.Value) ||
+            (expectedLength.HasValue && copied != expectedLength.Value))
+            throw new InvalidDataException("The bundled audio failed its ZIP integrity check.");
+    }
+
+    private static bool IsCachedSourceValid(
+        string path, ZipArchiveEntry source, CachedSource? record,
+        IProgress<ProjectStoreProgress>? progress, string trackName,
+        long completedBytes, long totalBytes, int completedItems, int totalItems)
+    {
+        if (!File.Exists(path))
+            return false;
+        var info = new FileInfo(path);
+        if (info.Length != source.Length)
+            return false;
+        if (record is not null && record.SourceLength == source.Length && record.SourceCrc32 == source.Crc32 &&
+            record.CachedLength == info.Length && record.CachedLastWriteUtcTicks == info.LastWriteTimeUtc.Ticks)
+        {
+            progress?.Report(new ProjectStoreProgress("Using verified cached audio…", trackName,
+                completedBytes + source.Length, totalBytes, completedItems + 1, totalItems));
+            return true;
+        }
+
+        progress?.Report(new ProjectStoreProgress("Verifying cached audio…", trackName,
+            completedBytes, totalBytes, completedItems, totalItems));
+        using var stream = File.OpenRead(path);
+        var crc = ComputeCrc32(stream, bytesRead => progress?.Report(new ProjectStoreProgress(
+            "Verifying cached audio…", trackName, completedBytes + bytesRead,
+            totalBytes, completedItems, totalItems)));
+        return crc == source.Crc32;
+    }
+
+    private static uint ComputeCrc32(Stream stream, Action<long> report)
+    {
+        uint crc = uint.MaxValue;
+        var buffer = new byte[4 * 1024 * 1024];
+        long total = 0;
+        int read;
+        while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            crc = UpdateCrc(crc, buffer, read);
+            total += read;
+            report(total);
+        }
+        return ~crc;
+    }
+
+    private static uint UpdateCrc(uint crc, byte[] buffer, int count)
+    {
+        for (var index = 0; index < count; index++)
+            crc = (crc >> 8) ^ CrcTable[(crc ^ buffer[index]) & 0xFF];
+        return crc;
+    }
+
+    private static uint[] CreateCrcTable()
+    {
+        var table = new uint[256];
+        for (uint index = 0; index < table.Length; index++)
+        {
+            var value = index;
+            for (var bit = 0; bit < 8; bit++)
+                value = (value >> 1) ^ (0xEDB88320u & (uint)-(int)(value & 1));
+            table[index] = value;
+        }
+        return table;
+    }
+
+    private static CacheIndex ReadCacheIndex(string path)
+    {
+        try
+        {
+            var index = File.Exists(path)
+                ? JsonSerializer.Deserialize<CacheIndex>(File.ReadAllText(path), SerializerOptions)
+                : null;
+            return index is { Version: 1, Files: not null } ? index : new();
+        }
+        catch (Exception ex) when (ex is JsonException or IOException)
+        {
+            return new();
+        }
+    }
+
+    private static void WriteCacheIndex(string path, CacheIndex index)
+    {
+        var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            File.WriteAllText(temporaryPath, JsonSerializer.Serialize(index, SerializerOptions));
+            File.Move(temporaryPath, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+                File.Delete(temporaryPath);
+        }
+    }
+
+    private sealed class CacheIndex
+    {
+        public int Version { get; set; } = 1;
+        public Dictionary<string, CachedSource> Files { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed record CachedSource(long SourceLength, uint SourceCrc32, long CachedLength, long CachedLastWriteUtcTicks)
+    {
+        public static CachedSource From(string path, ZipArchiveEntry source)
+        {
+            var info = new FileInfo(path);
+            return new(source.Length, source.Crc32, info.Length, info.LastWriteTimeUtc.Ticks);
         }
     }
 }
