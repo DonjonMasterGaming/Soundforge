@@ -13,7 +13,7 @@ internal static class CloudRegression
 {
     public static async Task Run(string root)
     {
-        var batchUrls = CloudImportInput.ParseUrls("https://example.com/one.mp3\r\n\r\nhttps://drive.google.com/file/d/1234567890abc/view\nhttps://example.com/one.mp3");
+        var batchUrls = CloudImportInput.ParseUrls("https://example.com/one.mp3, https://drive.google.com/file/d/1234567890abc/view\r\n\r\nhttps://example.com/one.mp3");
         if (batchUrls.Count != 2)
             throw new Exception("Batch cloud input did not ignore blank lines and duplicate links.");
         try
@@ -31,6 +31,9 @@ internal static class CloudRegression
             throw new Exception("Google Drive share-link recognition failed.");
         var queryDrive = CloudSourceAddress.Parse("https://drive.google.com/open?id=ZyXwVuTsRqP-987654");
         if (queryDrive.ProviderId != "ZyXwVuTsRqP-987654") throw new Exception("Google Drive query-link recognition failed.");
+        var protectedDrive = CloudSourceAddress.Parse("https://drive.google.com/file/d/AbCdEfGhIjK_123456/view?resourcekey=0-example_KEY");
+        if (!protectedDrive.DownloadUri.Query.Contains("resourcekey=0-example_KEY", StringComparison.Ordinal))
+            throw new Exception("Google Drive resource key was not preserved for download.");
 
         var audioPath = Path.Combine(root, "cloud-fixture.wav");
         using (var writer = new WaveFileWriter(audioPath, new WaveFormat(44100, 16, 2)))

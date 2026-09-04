@@ -6,7 +6,7 @@
     <StackPanel Margin="18" Width="540">
         <TextBlock Text="CLOUD AUDIO LINKS" FontWeight="Bold"/>
         <TextBlock Margin="0,5,0,10" TextWrapping="Wrap"
-                   Text="Paste one link per line. Soundforge downloads every successful file into its local cache before adding it. Direct HTTPS audio URLs and publicly downloadable Google Drive file links are supported."/>
+                   Text="Paste one link per line, or paste Google's comma-separated list. Soundforge downloads every successful file into its local cache before adding it. Direct HTTPS audio URLs and publicly downloadable Google Drive file links are supported."/>
         <TextBox x:Name="UrlText" MinHeight="180" MaxHeight="420" Padding="5"
                  AcceptsReturn="True" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto"
                  HorizontalScrollBarVisibility="Auto"/>

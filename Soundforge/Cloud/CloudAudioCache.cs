@@ -175,24 +175,33 @@ public sealed record CloudSourceAddress(Uri OriginalUri, Uri DownloadUri, AudioS
     {
         if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
             throw new InvalidDataException("Enter a complete HTTPS audio address.");
-        if (TryGetGoogleDriveId(uri, out var id))
-            return new(uri, new Uri($"https://drive.usercontent.google.com/download?id={Uri.EscapeDataString(id)}&export=download&confirm=t"), AudioSourceKind.GoogleDrive, id);
+        if (TryGetGoogleDriveId(uri, out var id, out var resourceKey))
+        {
+            var resourceKeyQuery = string.IsNullOrWhiteSpace(resourceKey)
+                ? string.Empty
+                : $"&resourcekey={Uri.EscapeDataString(resourceKey)}";
+            return new(uri, new Uri($"https://drive.usercontent.google.com/download?id={Uri.EscapeDataString(id)}&export=download&confirm=t{resourceKeyQuery}"), AudioSourceKind.GoogleDrive, id);
+        }
         return new(uri, uri, AudioSourceKind.HttpUrl, null);
     }
-    private static bool TryGetGoogleDriveId(Uri uri, out string id)
+    private static bool TryGetGoogleDriveId(Uri uri, out string id, out string resourceKey)
     {
         id = "";
+        resourceKey = "";
         if (!uri.Host.Equals("drive.google.com", StringComparison.OrdinalIgnoreCase) &&
             !uri.Host.EndsWith(".drive.google.com", StringComparison.OrdinalIgnoreCase)) return false;
         var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
         var marker = Array.FindIndex(segments, item => item.Equals("d", StringComparison.OrdinalIgnoreCase));
         if (marker >= 0 && marker + 1 < segments.Length) id = segments[marker + 1];
-        if (string.IsNullOrWhiteSpace(id))
-            foreach (var part in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
-            {
-                var pair = part.Split('=', 2);
-                if (pair.Length == 2 && pair[0].Equals("id", StringComparison.OrdinalIgnoreCase)) id = Uri.UnescapeDataString(pair[1]);
-            }
+        foreach (var part in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pair = part.Split('=', 2);
+            if (pair.Length != 2) continue;
+            if (string.IsNullOrWhiteSpace(id) && pair[0].Equals("id", StringComparison.OrdinalIgnoreCase))
+                id = Uri.UnescapeDataString(pair[1]);
+            if (pair[0].Equals("resourcekey", StringComparison.OrdinalIgnoreCase))
+                resourceKey = Uri.UnescapeDataString(pair[1]);
+        }
         return id.Length is >= 10 and <= 200 && id.All(character => char.IsLetterOrDigit(character) || character is '-' or '_');
     }
 }
