@@ -7,8 +7,11 @@ $buildsRoot = [IO.Path]::GetFullPath('F:\Folders\Useful Stuff\Visual Studio\Soun
 $versionRoot = [IO.Path]::GetFullPath((Join-Path $buildsRoot '0.9a.3'))
 if ($sourceRoot -ne 'F:\Folders\Useful Stuff\Visual Studio\Soundforge 0.9a.3') { throw "Run this script from the canonical 0.9a.3 workspace." }
 if ($versionRoot -ne 'F:\Folders\Useful Stuff\Visual Studio\Soundforge Builds\0.9a.3') { throw "Unexpected output path." }
-if (Test-Path -LiteralPath $versionRoot) { Remove-Item -LiteralPath $versionRoot -Recurse -Force }
 $packageRoot = Join-Path $versionRoot 'Soundforge-0.9a.3-Portable-Update'
+$zipPath = Join-Path $versionRoot 'Soundforge-0.9a.3-Portable-Update.zip'
+New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
+Get-ChildItem -LiteralPath $packageRoot -Force | Remove-Item -Recurse -Force
+Remove-Item -LiteralPath $zipPath, "$zipPath.sha256.txt" -Force -ErrorAction SilentlyContinue
 $payloadRoot = Join-Path $packageRoot 'payload'
 New-Item -ItemType Directory -Path $payloadRoot -Force | Out-Null
 
@@ -31,7 +34,6 @@ Compress-Archive -Path $pluginBundle -DestinationPath $pluginZip -CompressionLev
 Remove-Item -LiteralPath $pluginBundle -Recurse -Force
 Move-Item -LiteralPath $pluginZip -Destination (Join-Path $pluginContainer 'Soundforge-StreamDeck-0.9a.3.streamDeckPlugin')
 
-$zipPath = Join-Path $versionRoot 'Soundforge-0.9a.3-Portable-Update.zip'
 Compress-Archive -Path (Join-Path $packageRoot '*') -DestinationPath $zipPath -CompressionLevel Optimal
 $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash
 Set-Content -LiteralPath "$zipPath.sha256.txt" -Value "$hash  Soundforge-0.9a.3-Portable-Update.zip" -Encoding ascii
