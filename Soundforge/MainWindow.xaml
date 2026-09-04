@@ -127,7 +127,7 @@
                             <DockPanel>
                                 <TextBlock x:Name="SceneTracksHeader" Text="SCENE TRACKS" FontWeight="Bold" DockPanel.Dock="Left"/>
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                    <Button Content="＋ Add from URL" Click="AddUrl_Click" Padding="10,4" Margin="0,0,6,0"/>
+                                    <Button Content="＋ Add Cloud Audio" Click="AddUrl_Click" Padding="10,4" Margin="0,0,6,0"/>
                                     <Button Content="＋ Import Audio Files" Click="Load_Click" Padding="10,4"/>
                                 </StackPanel>
                             </DockPanel>

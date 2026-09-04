@@ -3,6 +3,7 @@
 ## What is new
 
 - Add a track from a direct HTTPS audio URL.
+- Paste and import hundreds of cloud audio links in one batch; successful files remain imported when an individual link fails.
 - Recognise common public Google Drive file share links and cache the result locally.
 - Download on a background task, show progress, validate that the completed file can be decoded, and only then add it to a scene.
 - Play URL/Drive sources exclusively from local cached audio. Once cached, playback makes no network request.
@@ -15,7 +16,7 @@ Public Drive links must permit downloading without sign-in. Google account conne
 
 ## Installation and updating
 
-Extract the complete ZIP and run **Install or Update Soundforge.exe** beside `update.json` and the `payload` folder.
+Extract the complete ZIP and run **Update Soundforge.exe** beside `update.json` and the `payload` folder.
 
 On this development PC, the first updater recognises the existing 0.9a.2 installation and offers to update it in place, preserving the existing pinned shortcut. Otherwise it asks for one permanent install folder and records that choice. Later update packages reuse that location automatically.
 

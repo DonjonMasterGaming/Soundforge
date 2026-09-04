@@ -13,6 +13,18 @@ internal static class CloudRegression
 {
     public static async Task Run(string root)
     {
+        var batchUrls = CloudImportInput.ParseUrls("https://example.com/one.mp3\r\n\r\nhttps://drive.google.com/file/d/1234567890abc/view\nhttps://example.com/one.mp3");
+        if (batchUrls.Count != 2)
+            throw new Exception("Batch cloud input did not ignore blank lines and duplicate links.");
+        try
+        {
+            CloudImportInput.ParseUrls("https://example.com/good.mp3\nnot-a-url");
+            throw new Exception("Batch cloud input accepted an invalid line.");
+        }
+        catch (InvalidDataException)
+        {
+        }
+
         var drive = CloudSourceAddress.Parse("https://drive.google.com/file/d/AbCdEfGhIjK_123456/view?usp=sharing");
         if (drive.Kind != AudioSourceKind.GoogleDrive || drive.ProviderId != "AbCdEfGhIjK_123456" ||
             drive.DownloadUri.Host != "drive.usercontent.google.com")

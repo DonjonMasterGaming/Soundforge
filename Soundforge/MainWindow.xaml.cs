@@ -129,39 +129,58 @@ public partial class MainWindow : Window
         var dialog = new AddUrlSourceWindow { Owner = this };
         if (dialog.ShowDialog() != true) return;
 
-        var progressWindow = CreateProjectProgressWindow("Caching cloud audio");
+        var sourceUrls = dialog.SourceUrls;
+        var progressWindow = CreateProjectProgressWindow(sourceUrls.Count == 1 ? "Caching cloud audio" : $"Caching {sourceUrls.Count} cloud sources");
+        var failures = new List<string>();
+        var added = 0;
         try
         {
             using var cache = new CloudAudioCache();
-            var progress = new Progress<CloudDownloadProgress>(value => progressWindow.ShowProgress(
-                new ProjectStoreProgress(value.Stage, value.Name, value.DownloadedBytes,
-                    value.TotalBytes ?? 0, value.DownloadedBytes > 0 ? 1 : 0, 1)));
-            var cached = await cache.GetOrDownloadAsync(dialog.SourceUrl, dialog.DisplayName,
-                CloudAudioCache.DefaultFolder, progress);
-            var targetLayer = _selectedScene.Layers.FirstOrDefault();
-            var track = new Track
+            for (var index = 0; index < sourceUrls.Count; index++)
             {
-                Name = cached.DisplayName,
-                FilePath = cached.LocalPath,
-                SourceKind = cached.Kind,
-                SourceUri = cached.SourceUri,
-                SourceProviderId = cached.ProviderId,
-                SourceETag = cached.ETag,
-                SourceModifiedUtc = cached.ModifiedUtc,
-                CachedAtUtc = DateTimeOffset.UtcNow,
-                Volume = 0.8,
-                LayerId = targetLayer?.Id,
-                Loop = targetLayer?.PlaybackBehavior == LayerPlaybackBehavior.Ambience,
-                AutoPlayOnSceneActivation = targetLayer?.PlaybackBehavior != LayerPlaybackBehavior.Effects
-            };
-            AssignTrackToLayer(track, track.LayerId);
-            AddTrackRow(null, track);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Unable to cache this audio source:\n\n{ex.Message}", "Add from URL", MessageBoxButton.OK, MessageBoxImage.Warning);
+                var sourceUrl = sourceUrls[index];
+                progressWindow.ShowProgress(new ProjectStoreProgress("Preparing cloud source…", sourceUrl, 0, 0, index, sourceUrls.Count));
+                try
+                {
+                    var currentIndex = index;
+                    var progress = new Progress<CloudDownloadProgress>(value => progressWindow.ShowProgress(
+                        new ProjectStoreProgress(value.Stage, value.Name, value.DownloadedBytes,
+                            value.TotalBytes ?? 0, currentIndex, sourceUrls.Count)));
+                    var cached = await cache.GetOrDownloadAsync(sourceUrl, dialog.DisplayName,
+                        CloudAudioCache.DefaultFolder, progress);
+                    var targetLayer = _selectedScene.Layers.FirstOrDefault();
+                    var track = new Track
+                    {
+                        Name = cached.DisplayName,
+                        FilePath = cached.LocalPath,
+                        SourceKind = cached.Kind,
+                        SourceUri = cached.SourceUri,
+                        SourceProviderId = cached.ProviderId,
+                        SourceETag = cached.ETag,
+                        SourceModifiedUtc = cached.ModifiedUtc,
+                        CachedAtUtc = DateTimeOffset.UtcNow,
+                        Volume = 0.8,
+                        LayerId = targetLayer?.Id,
+                        Loop = targetLayer?.PlaybackBehavior == LayerPlaybackBehavior.Ambience,
+                        AutoPlayOnSceneActivation = targetLayer?.PlaybackBehavior != LayerPlaybackBehavior.Effects
+                    };
+                    AssignTrackToLayer(track, track.LayerId);
+                    AddTrackRow(null, track);
+                    added++;
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{sourceUrl} — {ex.Message}");
+                }
+            }
         }
         finally { CloseProjectProgressWindow(progressWindow); }
+
+        if (failures.Count > 0)
+        {
+            var summary = $"Added {added} of {sourceUrls.Count} cloud sources.\n\nThe following links could not be added:\n\n{string.Join("\n", failures)}";
+            MessageBox.Show(summary, "Cloud import completed with warnings", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private void OutputDeviceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
