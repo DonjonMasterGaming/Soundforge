@@ -9,6 +9,7 @@
 .build-temp/
 analysis/
 release/
+artifacts/
 **/.publish-cache/
 **/publish/
 **/cache/

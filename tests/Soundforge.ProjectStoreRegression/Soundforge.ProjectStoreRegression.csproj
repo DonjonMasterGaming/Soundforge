@@ -6,5 +6,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\Soundforge\Soundforge.csproj" />
+    <ProjectReference Include="..\..\Soundforge.Updater\Soundforge.Updater.csproj" />
   </ItemGroup>
 </Project>

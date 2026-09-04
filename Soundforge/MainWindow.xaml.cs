@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Soundforge.Audio;
+using Soundforge.Cloud;
 using Soundforge.Control;
 using Soundforge.Models;
 using Soundforge.Persistence;
@@ -116,6 +117,51 @@ public partial class MainWindow : Window
 
         if (failures.Count > 0)
             MessageBox.Show($"Some files could not be imported:\n\n{string.Join("\n", failures)}", "Soundforge", MessageBoxButton.OK, MessageBoxImage.Warning);
+    }
+
+    private async void AddUrl_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedScene is null)
+        {
+            MessageBox.Show("Select a scene before adding audio.", "Add from URL", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var dialog = new AddUrlSourceWindow { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+
+        var progressWindow = CreateProjectProgressWindow("Caching cloud audio");
+        try
+        {
+            using var cache = new CloudAudioCache();
+            var progress = new Progress<CloudDownloadProgress>(value => progressWindow.ShowProgress(
+                new ProjectStoreProgress(value.Stage, value.Name, value.DownloadedBytes,
+                    value.TotalBytes ?? 0, value.DownloadedBytes > 0 ? 1 : 0, 1)));
+            var cached = await cache.GetOrDownloadAsync(dialog.SourceUrl, dialog.DisplayName,
+                CloudAudioCache.DefaultFolder, progress);
+            var targetLayer = _selectedScene.Layers.FirstOrDefault();
+            var track = new Track
+            {
+                Name = cached.DisplayName,
+                FilePath = cached.LocalPath,
+                SourceKind = cached.Kind,
+                SourceUri = cached.SourceUri,
+                SourceProviderId = cached.ProviderId,
+                SourceETag = cached.ETag,
+                SourceModifiedUtc = cached.ModifiedUtc,
+                CachedAtUtc = DateTimeOffset.UtcNow,
+                Volume = 0.8,
+                LayerId = targetLayer?.Id,
+                Loop = targetLayer?.PlaybackBehavior == LayerPlaybackBehavior.Ambience,
+                AutoPlayOnSceneActivation = targetLayer?.PlaybackBehavior != LayerPlaybackBehavior.Effects
+            };
+            AssignTrackToLayer(track, track.LayerId);
+            AddTrackRow(null, track);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Unable to cache this audio source:\n\n{ex.Message}", "Add from URL", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally { CloseProjectProgressWindow(progressWindow); }
     }
 
     private void OutputDeviceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1070,7 +1116,7 @@ public partial class MainWindow : Window
 
     private static void NormalizePlaylistPools(SoundforgeProject project)
     {
-        project.FormatVersion = Math.Max(project.FormatVersion, 5);
+        project.FormatVersion = Math.Max(project.FormatVersion, 6);
         foreach (var scene in project.Scenes)
         {
             EnsureDefaultSceneLayers(scene);
@@ -1323,7 +1369,18 @@ public partial class MainWindow : Window
             return;
         }
 
-        var name = new TextBlock { Text = track.Name, FontWeight = FontWeights.SemiBold };
+        var sourceMarker = track.SourceKind switch
+        {
+            AudioSourceKind.GoogleDrive => "☁ Google Drive · Cached offline",
+            AudioSourceKind.HttpUrl => "☁ URL · Cached offline",
+            _ => null
+        };
+        var name = new TextBlock
+        {
+            Text = sourceMarker is null ? track.Name : $"{track.Name}    [{sourceMarker}]",
+            FontWeight = FontWeights.SemiBold,
+            ToolTip = track.SourceUri
+        };
         var status = new TextBlock { Text = "▶ Playing", Margin = new Thickness(0, 3, 0, 0) };
         var progress = new ProgressBar { Height = 6, Minimum = 0, Maximum = 1, Margin = new Thickness(0, 8, 0, 0) };
         var volume = new Slider { Minimum = 0, Maximum = 1, Value = track.Volume, Width = 130, Margin = new Thickness(6, 0, 0, 0) };

@@ -1,0 +1,20 @@
+<Window x:Class="Soundforge.AddUrlSourceWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Add audio from URL" SizeToContent="WidthAndHeight" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" Background="#202228" Foreground="#F2F2F2">
+    <StackPanel Margin="18" Width="540">
+        <TextBlock Text="AUDIO URL" FontWeight="Bold"/>
+        <TextBlock Margin="0,5,0,10" TextWrapping="Wrap"
+                   Text="Soundforge downloads the audio into its local cache before adding it. Direct HTTPS audio URLs and publicly downloadable Google Drive file links are supported."/>
+        <TextBox x:Name="UrlText" MinHeight="30" Padding="5"/>
+        <TextBlock Text="Optional display name" Margin="0,14,0,4"/>
+        <TextBox x:Name="NameText" MinHeight="30" Padding="5"/>
+        <TextBlock Margin="0,12,0,0" Foreground="#9FD0FF" TextWrapping="Wrap"
+                   Text="Private Drive files require Google sign-in, planned for a later build. Network audio is never streamed during playback."/>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button Content="Cancel" IsCancel="True" Padding="14,6"/>
+            <Button Content="Download and Add" IsDefault="True" Padding="14,6" Margin="8,0,0,0" Click="Accept_Click"/>
+        </StackPanel>
+    </StackPanel>
+</Window>

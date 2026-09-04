@@ -13,7 +13,8 @@ internal static class CacheRegression
         var projectPath = Path.Combine(root, "verified-cache.soundforge");
         var bytes = Enumerable.Range(0, 65536).Select(index => (byte)(index % 251)).ToArray();
         File.WriteAllBytes(audio, bytes);
-        var track = new Track { FilePath = audio, Name = "Cache source" };
+        var track = new Track { FilePath = audio, Name = "Cache source", SourceKind = AudioSourceKind.HttpUrl,
+            SourceUri = "https://example.com/cache-source.wav", SourceETag = "fixture", CachedAtUtc = DateTimeOffset.UtcNow };
         var project = new SoundforgeProject
         {
             Scenes = [new Scene { Layers = [new Layer { Playlists = [new Playlist { Tracks = [track] }] }] }]
@@ -24,6 +25,9 @@ internal static class CacheRegression
             throw new Exception("The save snapshot shares mutable source state.");
         SoundforgeProjectStore.Save(projectPath, project);
         var first = SoundforgeProjectStore.Load(projectPath);
+        var firstTrack = first.Scenes[0].Layers[0].Playlists[0].Tracks[0];
+        if (firstTrack.SourceKind != AudioSourceKind.HttpUrl || firstTrack.SourceUri != track.SourceUri || firstTrack.SourceETag != "fixture")
+            throw new Exception("Portable save/load lost cloud source identity.");
         var cachedPath = first.Scenes[0].Layers[0].Playlists[0].Tracks[0].FilePath;
         var cacheDirectory = Path.GetDirectoryName(cachedPath)!;
         var indexPath = Path.Combine(cacheDirectory, ".soundforge-cache.json");
