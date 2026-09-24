@@ -35,6 +35,14 @@ StreamDeckPlugin/com.soundforge.control.sdPlugin/*
 !StreamDeckPlugin/com.soundforge.control.sdPlugin/assets/**
 
 # Local scratch material
+.sdk/
+.validation/
+dotnet-install.ps1
+**/oauth-client.json
+**/client_secret*.json
+**/credentials*.json
+**/credentials*.bin
+**/auth/
 comparison/
 share/
 

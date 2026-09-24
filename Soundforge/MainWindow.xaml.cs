@@ -16,6 +16,15 @@ namespace Soundforge;
 
 public partial class MainWindow : Window
 {
+    private GoogleConnectionWindow? _googleConnection;
+    private void GoogleDrive_Click(object sender, RoutedEventArgs e)
+    {
+        if (_googleConnection is not null) { _googleConnection.Activate(); return; }
+        _googleConnection = new GoogleConnectionWindow { Owner = this };
+        _googleConnection.Closed += (_, _) => _googleConnection = null;
+        _googleConnection.Show();
+    }
+
     private readonly AudioEngine _audioEngine = new();
     private readonly AudioDeviceManager _devices = new();
     private readonly DispatcherTimer _timer;

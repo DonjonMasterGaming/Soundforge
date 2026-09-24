@@ -6,13 +6,14 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <Platforms>AnyCPU</Platforms>
-    <Version>0.9.0-alpha.3</Version>
-    <InformationalVersion>0.9.0-alpha.3</InformationalVersion>
+    <Version>0.9.0-alpha.4</Version>
+    <InformationalVersion>0.9.0-alpha.4-phase1</InformationalVersion>
     <AssemblyVersion>0.9.0.0</AssemblyVersion>
-    <FileVersion>0.9.0.3</FileVersion>
+    <FileVersion>0.9.0.4</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
   </ItemGroup>
 </Project>

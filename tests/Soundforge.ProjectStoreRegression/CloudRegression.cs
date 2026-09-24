@@ -50,7 +50,7 @@ internal static class CloudRegression
             return response;
         });
         var cacheFolder = Path.Combine(root, "cloud-cache");
-        using (var cache = new CloudAudioCache(handler))
+        using (var cache = new CloudAudioCache(handler, new FakeAddresses()))
         {
             var first = await cache.GetOrDownloadAsync("https://example.com/start", "Cloud fixture", cacheFolder);
             if (first.ReusedCache || first.Kind != AudioSourceKind.HttpUrl || first.DisplayName != "Cloud fixture" ||
@@ -66,7 +66,7 @@ internal static class CloudRegression
         {
             Content = new StringContent("<!doctype html><html>login</html>", System.Text.Encoding.UTF8, "text/html")
         });
-        using (var cache = new CloudAudioCache(htmlHandler))
+        using (var cache = new CloudAudioCache(htmlHandler, new FakeAddresses()))
         {
             try
             {
@@ -77,7 +77,27 @@ internal static class CloudRegression
         }
         if (Directory.GetFiles(cacheFolder, "*.download").Length != 0)
             throw new Exception("Failed cloud download left a partial file.");
-        using (var cache = new CloudAudioCache(new FakeHandler(_ => throw new Exception("Network should not be reached."))))
+        foreach (var address in new[] { "10.1.2.3", "172.16.1.1", "192.168.1.2", "169.254.1.1", "::1", "fc00::1", "::ffff:192.168.1.2" })
+        {
+            using var privateCache = new CloudAudioCache(new FakeHandler(_ => throw new Exception("Private target reached HTTP.")), new FakeAddresses(address));
+            try
+            {
+                await privateCache.GetOrDownloadAsync("https://private.example.invalid/source.wav", null, cacheFolder);
+                throw new Exception("Private DNS resolution was accepted.");
+            }
+            catch (InvalidDataException ex) when (ex.Message.Contains("private network")) { }
+        }
+        using (var redirectCache = new CloudAudioCache(new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.Redirect)
+            { Headers = { Location = new Uri("http://example.invalid/audio.wav") } }), new FakeAddresses()))
+        {
+            try
+            {
+                await redirectCache.GetOrDownloadAsync("https://example.invalid/redirect", null, cacheFolder);
+                throw new Exception("HTTPS downgrade was accepted.");
+            }
+            catch (InvalidDataException ex) when (ex.Message.Contains("HTTPS")) { }
+        }
+        using (var cache = new CloudAudioCache(new FakeHandler(_ => throw new Exception("Network should not be reached.")), new FakeAddresses()))
         {
             try
             {
@@ -87,6 +107,12 @@ internal static class CloudRegression
             catch (InvalidDataException ex) when (ex.Message.Contains("private network")) { }
         }
         Console.WriteLine("Cloud source recognition, redirect, validation, offline reuse, HTML rejection, SSRF guard and partial-file cleanup tests passed.");
+    }
+
+    private sealed class FakeAddresses(string address = "93.184.215.14") : IAddressResolver
+    {
+        public Task<IPAddress[]> ResolveAsync(string host, CancellationToken cancellationToken) =>
+            Task.FromResult(new[] { IPAddress.Parse(address) });
     }
 
     private sealed class FakeHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler

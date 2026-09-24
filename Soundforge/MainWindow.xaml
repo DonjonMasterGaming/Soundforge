@@ -1,7 +1,7 @@
 <Window x:Class="Soundforge.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Soundforge 0.9a.3" Height="820" Width="1400"
+        Title="Soundforge 0.9a.4 — Google authentication preview" Height="820" Width="1400"
         MinHeight="600" MinWidth="960"
         Background="#17181C" Foreground="#F2F2F2">
     <Window.Resources>
@@ -49,6 +49,7 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel Margin="0,0,5,0">
                     <TextBlock Text="SCENES" FontWeight="Bold" Margin="0,0,0,10"/>
+                    <Button Content="Connect Google Drive…" Click="GoogleDrive_Click" Padding="8" Margin="0,0,0,10"/>
                     <StackPanel x:Name="SceneButtonsPanel"/>
                     <Grid Margin="0,8,0,0">
                         <Grid.ColumnDefinitions>

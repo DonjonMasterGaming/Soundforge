@@ -27,6 +27,7 @@ try
     }
     CacheRegression.Run(testRoot);
     await CloudRegression.Run(testRoot);
+    await OAuthRegression.Run(testRoot);
     UpdaterRegression.Run(testRoot);
     var sourcePath = Path.Combine(testRoot, "source.wav");
     File.WriteAllBytes(sourcePath, [0x52, 0x49, 0x46, 0x46]);

@@ -16,14 +16,16 @@ public sealed class CloudAudioCache : IDisposable
     private static readonly HashSet<string> AudioExtensions = new(StringComparer.OrdinalIgnoreCase) { ".mp3", ".wav", ".aiff", ".aif", ".ogg" };
     private readonly HttpClient _client;
     private readonly bool _ownsClient;
+    private readonly IAddressResolver _addresses;
 
-    public CloudAudioCache(HttpMessageHandler? handler = null)
+    public CloudAudioCache(HttpMessageHandler? handler = null, IAddressResolver? addresses = null)
     {
+        _addresses = addresses ?? new SystemAddressResolver();
         _ownsClient = true;
         _client = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromMinutes(30) };
         _client.DefaultRequestHeaders.UserAgent.ParseAdd("Soundforge/0.9a.3");
     }
-    internal CloudAudioCache(HttpClient client) { _client = client; _ownsClient = false; }
+    internal CloudAudioCache(HttpClient client) { _client = client; _ownsClient = false; _addresses = new SystemAddressResolver(); }
     public static string DefaultFolder => Path.Combine(AppContext.BaseDirectory, "data", "CloudSources");
 
     public async Task<CachedCloudSource> GetOrDownloadAsync(string sourceUrl, string? displayName, string cacheFolder,
@@ -112,12 +114,12 @@ public sealed class CloudAudioCache : IDisposable
         throw new HttpRequestException("The download redirected too many times.");
     }
 
-    private static async Task EnsurePublicHttpsAddressAsync(Uri uri, CancellationToken cancellationToken)
+    private async Task EnsurePublicHttpsAddressAsync(Uri uri, CancellationToken cancellationToken)
     {
         if (uri.Scheme != Uri.UriSchemeHttps) throw new InvalidDataException("Soundforge only downloads HTTPS audio addresses.");
         if (uri.IsLoopback || uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Local and private network addresses cannot be used as audio URLs.");
-        var addresses = await Dns.GetHostAddressesAsync(uri.DnsSafeHost, cancellationToken).ConfigureAwait(false);
+        var addresses = await _addresses.ResolveAsync(uri.DnsSafeHost, cancellationToken).ConfigureAwait(false);
         if (addresses.Length == 0 || addresses.Any(IsPrivateAddress))
             throw new InvalidDataException("Local and private network addresses cannot be used as audio URLs.");
     }
